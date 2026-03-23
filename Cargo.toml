@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-command-group = "5.0.1"
+command-group = { version = "5.0.1",features = ["with-tokio"] }
 tray-icon = "0.21.3"
 image = "0.25.10"
 serde = { version = "1.0", features = ["derive"] }
@@ -15,9 +15,8 @@ tao = "0.34.6"
 anyhow = "1.0.102"
 config = "0.15.22"
 clap = { version = "4.6.0",features = ["derive"] }
-
-[profile.dev]
-incremental = true
+tokio = { version = "1.50.0",features = ["full"] }
+sys-locale = "0.3.2"
 
 
 [profile.release]

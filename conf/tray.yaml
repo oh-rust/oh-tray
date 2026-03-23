@@ -1,5 +1,5 @@
 title: "应用标题"
-icon: "icons/icon.png"
+icon: "icons/icon.png"  # 可选，自定义托盘图标
 groups:
   - name: "aimux"  # 显示子菜单item
     home: "D:\\soft\\my\\aimux"  # 此子组程序的工作目录，可选，默认为空。后续 Icon、Start、Stop、Restart 命令均相对于此目录。
@@ -9,7 +9,8 @@ groups:
     restart: ""  # 有值时，显示子菜单item:ReStart，当进程运行中，则设置为可用，否则为不可用
     auto_start: true  # 启动进程时是否自动启动该子组，不需要显示为菜单，此配置项可选，默认为 true
     keep_alive: true  # 若进程异常退出，是否自动启动，不需要显示为菜单，此配置项可选，默认为 true
-    address: "http://127.0.0.1:9001"  # 本地 Web 访问地址，有值时显示子菜单 item:OpenBrowser，此配置项可选，默认为空
+    address: "http://127.0.0.1:9001/admin/"  # 本地 Web 访问地址，有值时显示子菜单 item:OpenBrowser，此配置项可选，默认为空
+    auto_open: true    # 是否自动在浏览器打开，可选，默认为 false
 
   - name: "子组应用名称2"
     home: "/home/work/app2/"

@@ -1,23 +1,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use clap::Parser;
-use command_group::{CommandGroup, GroupChild};
+use command_group::{AsyncCommandGroup, AsyncGroupChild};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
+
+use tokio::process::Command;
+use tokio::sync::{Mutex, mpsc};
+
 use tray_icon::{
     TrayIconBuilder,
-    menu::{Icon, IconMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{IconMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
 };
 
 #[derive(Parser, Debug)]
-#[command(author, version, about)]
 struct Args {
-    #[arg(short, long, value_name = "c", default_value = "conf/tray.yaml")]
+    #[arg(short, long, default_value = "conf/tray.yaml")]
     pub config: String,
 }
 
@@ -52,7 +53,10 @@ struct AppItem {
     auto_start: bool,
 
     #[serde(default)]
-    address: String,
+    address: String, // 浏览器访问地址
+
+    #[serde(default)]
+    auto_open: bool, // 是否自动在浏览器打开
 
     #[serde(skip_deserializing, default = "next_runtime_id")]
     uniq_id: usize,
@@ -91,154 +95,250 @@ impl AppConfig {
     }
 }
 
-struct ProcessInfo {
-    process: Option<GroupChild>,
+// ================= 状态 =================
+
+struct AppState {
+    procs: Mutex<HashMap<usize, Arc<Mutex<AsyncGroupChild>>>>,
+    tx: mpsc::UnboundedSender<(usize, bool)>,
+}
+
+impl AppState {
+    fn stop_all(self: &Arc<Self>) {
+        eprintln!("stopping all apps ...");
+        let state = self.clone();
+        tokio::spawn(async move {
+            let procs = state.procs.lock().await;
+
+            for (index, child) in procs.iter() {
+                let mut c = child.lock().await;
+                let ret1 = c.kill().await;
+                let ret2 = c.wait().await;
+                eprintln!("kill {} {:?},{:?}", index, ret1, ret2);
+            }
+        });
+    }
+}
+
+// ================= UI =================
+
+struct UiEntry {
+    start: MenuItem,
+    stop: MenuItem,
+    restart: MenuItem,
+    title: TitleMenu,
+    open: Option<IconMenuItem>,
 }
 
 enum TitleMenu {
     Submenu(Submenu),
-    Icon(IconMenuItem),
+    // Icon(IconMenuItem),
 }
 
-struct AppMenu {
-    title: Option<Arc<TitleMenu>>,
-    start: Arc<MenuItem>,
-    stop: Arc<MenuItem>,
-    restart: Arc<MenuItem>,
-    open: Option<Arc<MenuItem>>,
-}
+impl UiEntry {
+    fn set_running(&self, running: bool) {
+        self.start.set_enabled(!running);
+        self.stop.set_enabled(running);
+        self.restart.set_enabled(running);
 
-struct AppEntry {
-    proc: Mutex<ProcessInfo>,
-    menu: Mutex<AppMenu>,
-}
+        match &self.title {
+            TitleMenu::Submenu(title_menu) => {
+                title_menu.set_icon(Some(get_menu_icon(running)));
+            } // TitleMenu::Icon(title_menu) => {
+              //     title_menu.set_icon(Some(get_menu_icon(running)));
+              // }
+        }
 
-struct AppState {
-    config: AppConfig,
-    apps: Mutex<HashMap<usize, Arc<AppEntry>>>,
-}
-
-impl AppState {
-    fn with_process<F, R>(&self, id: usize, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut GroupChild) -> R,
-    {
-        let apps = self.apps.lock().unwrap();
-
-        let entry = apps.get(&id)?;
-        let mut proc = entry.proc.lock().unwrap();
-
-        let child = proc.process.as_mut()?;
-        Some(f(child))
+        if let Some(icon) = &self.open {
+            icon.set_enabled(running);
+        }
     }
+}
 
-    fn with_menu<F, R>(&self, id: usize, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut AppMenu) -> R,
-    {
-        let mut apps = self.apps.lock().unwrap();
+// ================= 进程 =================
+// use std::process::Stdio;
 
-        let entry = apps.get_mut(&id)?;
+impl AppItem {
+    fn start(&self, state: &Arc<AppState>) {
+        eprintln!("App.Start called");
+        let item = self.clone();
+        let state = state.clone();
 
-        let mut menu = entry.menu.lock().unwrap();
-        Some(f(&mut *menu))
-    }
-
-    fn update_ui(&self, id: usize, running: bool) {
-        self.with_menu(id, |menu| {
-            menu.start.set_enabled(!running);
-            menu.stop.set_enabled(running);
-            menu.restart.set_enabled(running);
-            if let Some(item) = &menu.open {
-                item.set_enabled(running);
-            }
-
-            if let Some(title) = &menu.title {
-                match title.as_ref() {
-                    TitleMenu::Submenu(title_menu) => {
-                        // submenu: &Submenu
-                        // title_menu.set_enabled(!running);
-                        title_menu.set_icon(Some(get_icon(running)));
-                    }
-                    TitleMenu::Icon(title_menu) => {
-                        // icon: &IconMenuItem
-                        // title_menu.set_enabled(!running);
-                        title_menu.set_icon(Some(get_icon(running)));
-                    }
-                }
-            }
+        tokio::spawn(async move {
+            item.a_start(&state).await;
         });
     }
 
-    fn set_title_menu(&self, id: usize, title: Arc<TitleMenu>) {
-        self.with_menu(id, |menu| {
-            menu.title = Some(title);
+    async fn a_start(&self, state: &Arc<AppState>) {
+        eprintln!("async App.Start called");
+        let item = self.clone();
+        let state = state.clone();
+        {
+            let procs = state.procs.lock().await;
+            if procs.contains_key(&item.uniq_id) {
+                eprintln!("[app.a_start] process already running");
+                return;
+            }
+        }
+
+        let mut cmd = build_shell(&item.start);
+
+        if !item.home.is_empty() {
+            cmd.current_dir(&item.home);
+        }
+        match cmd.group_spawn() {
+            Ok(child) => {
+                eprintln!(
+                    "[app.a_start] start process [{}] ({}) success, pid={}",
+                    item.name,
+                    item.start,
+                    child.id().unwrap_or(0)
+                );
+
+                let child = Arc::new(Mutex::new(child));
+
+                state.procs.lock().await.insert(item.uniq_id, child.clone());
+                let ret = state.tx.send((item.uniq_id, true));
+                eprintln!("[app.a_start] tx.send running: {:?}", ret);
+
+                let state_monitor = state.clone();
+                let item_monitor = item.clone();
+                let name = item_monitor.name.clone();
+
+                tokio::spawn(async move {
+                    loop {
+                        let exited = {
+                            let mut c = child.lock().await;
+                            match c.try_wait() {
+                                Ok(Some(status)) => {
+                                    eprintln!("[app.a_start] process [{}] exited with status {}", &name, status);
+                                    true
+                                }
+                                Ok(None) => false,
+                                Err(_) => true, // 出错也当作退出
+                            }
+                        };
+
+                        if exited {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+
+                    state_monitor.procs.lock().await.remove(&item_monitor.uniq_id);
+
+                    let ret = state_monitor.tx.send((item_monitor.uniq_id, false));
+                    eprintln!("[app.a_start] [watch] tx.send stop {:?}", ret);
+                });
+            }
+            Err(e) => {
+                eprintln!("[app.a_start] start process [{}] failed: {:?}", item.name, e);
+            }
+        }
+    }
+
+    fn stop(&self, state: &Arc<AppState>) {
+        eprintln!("App.Stop called");
+        let item = self.clone();
+        let state = state.clone();
+
+        tokio::spawn(async move {
+            item.a_stop(&state).await;
         });
     }
 
-    fn is_running(&self, id: usize) -> bool {
-        let apps = self.apps.lock().unwrap();
-
-        let entry = match apps.get(&id) {
-            Some(e) => e,
-            None => return false,
+    async fn a_stop(&self, state: &Arc<AppState>) {
+        eprintln!("async App.Stop called");
+        let item = self.clone();
+        let state = state.clone();
+        let maybe_child = {
+            let mut procs = state.procs.lock().await;
+            procs.remove(&item.uniq_id)
         };
-
-        let mut proc = entry.proc.lock().unwrap();
-
-        if let Some(child) = proc.process.as_mut() {
-            match child.try_wait() {
-                Ok(Some(_status)) => {
-                    // 进程已经退出，清空
-                    proc.process = None;
-                    false
-                }
-                Ok(None) => {
-                    // 还在运行
-                    true
-                }
-                Err(_) => {
-                    // 出错，当作没运行
-                    proc.process = None;
-                    false
-                }
-            }
+        if let Some(child) = maybe_child {
+            let mut c = child.lock().await;
+            let pid = c.id().unwrap_or(0);
+            let ret1 = c.kill().await;
+            let ret2 = c.wait().await;
+            eprintln!("[app.a_stop] stop process {}, kill={:?}, wait={:?}", pid, ret1, ret2);
         } else {
-            false
+            eprintln!("[app.a_stop] process not found");
         }
+
+        let ret = state.tx.send((item.uniq_id, false));
+        eprintln!("[app.a_stop]tx.send stop {:?}", ret);
     }
 
-    fn update_proc(&self, id: usize, info: Option<GroupChild>) {
-        let mut apps = self.apps.lock().unwrap();
-
-        if let Some(entry) = apps.get_mut(&id) {
-            let mut proc = entry.proc.lock().unwrap();
-            proc.process = info;
-        }
+    fn restart(&self, state: &Arc<AppState>) {
+        eprintln!("App.Restart called");
+        let item = self.clone();
+        let state = state.clone();
+        tokio::spawn(async move {
+            eprintln!("restart >>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+            item.a_stop(&state).await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            item.a_start(&state).await;
+            eprintln!("restart <<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+        });
     }
 
-    fn stop_all(self: &Arc<Self>) {
-        eprintln!("stopping all apps ...");
-        for item in self.config.groups.clone() {
-            item.stop(&self.clone());
-        }
-    }
-
-    fn auto_start(self: &Arc<Self>) {
-        eprintln!("auto staring  apps ...");
-        for item in self.config.groups.clone() {
-            self.update_ui(item.uniq_id, false); // 初始化状态
-            if item.auto_start {
-                item.start(&self.clone());
-            }
+    fn open_browser(&self, _state: &Arc<AppState>) {
+        eprintln!("{} open browser ...", &self.address);
+        if let Err(e) = webbrowser::open(&self.address) {
+            eprintln!("Failed to open browser for {}: {:?}", self.address, e);
         }
     }
 }
+
+// ================= util =================
+
+// #[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+use std::env;
+use std::fs;
 
 fn build_shell(cmd: &str) -> Command {
     if cfg!(target_os = "windows") {
-        let mut c = Command::new("cmd");
-        c.args(["/C", cmd]);
+        // let has_ps = std::process::Command::new("powershell")
+        //     .arg("-Command")
+        //     .arg("exit")
+        //     .stdout(Stdio::null())
+        //     .stderr(Stdio::null())
+        //     .status()
+        //     .map(|s| s.success())
+        //     .unwrap_or(false);
+        //
+        // let mut c;
+        // if has_ps {
+        //     c = Command::new("powershell");
+        //     // -WindowStyle Hidden 是双重保险
+        //     c.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd]);
+        // } else {
+        //     c = Command::new("cmd");
+        //     c.args(["/C", cmd]);
+        // }
+        // c.as_std_mut().creation_flags(0x08000000);
+        // c
+        let temp_dir = env::temp_dir();
+        let unique_id = Box::into_raw(Box::new(0)) as usize;
+        let file_name = format!("oh_tray_{}.vbs", unique_id);
+        let vbs_path = temp_dir.join(file_name);
+
+        let vbs_content = format!(
+            "CreateObject(\"Wscript.Shell\").Run \"cmd /C {}\", 0, True",
+            cmd.replace("\"", "\"\"") // 处理引号转义
+        );
+
+        let _ = fs::write(&vbs_path, vbs_content);
+        let mut c = Command::new("wscript.exe");
+        c.arg(&vbs_path);
+        c.as_std_mut().creation_flags(0x08000000);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+            let _ = std::fs::remove_file(vbs_path);
+        });
+
         c
     } else {
         let mut c = Command::new("sh");
@@ -247,101 +347,16 @@ fn build_shell(cmd: &str) -> Command {
     }
 }
 
-impl AppItem {
-    fn start(&self, state: &Arc<AppState>) {
-        eprintln!("process {} starting ...", self.name);
-
-        if state.is_running(self.uniq_id) {
-            eprintln!("process {} already is running, skipped", self.name);
-            return;
-        }
-
-        let mut cmd = build_shell(&self.start);
-
-        if !self.home.is_empty() {
-            cmd.current_dir(self.home.as_str());
-        }
-
-        match cmd.group_spawn() {
-            Ok(group) => {
-                println!("start {}, pid={}", &self.name, group.id());
-                state.update_proc(self.uniq_id, Some(group));
-            }
-            Err(e) => {
-                eprintln!(
-                    "Failed to start [{}]: {}, home={} cmd={:?}",
-                    self.name,
-                    e,
-                    self.home.as_str(),
-                    cmd
-                );
-                return;
-            }
-        }
-
-        state.update_ui(self.uniq_id, true);
-    }
-
-    fn stop(&self, state: &Arc<AppState>) {
-        eprintln!("process {} stopping ...", self.name);
-        if !state.is_running(self.uniq_id) {
-            eprintln!("process {} not running, skipped", self.name);
-            return;
-        }
-
-        if !self.stop.is_empty() {
-            let mut cmd = build_shell(self.stop.as_str());
-            if !self.home.is_empty() {
-                cmd.current_dir(self.home.as_str());
-            }
-            let ret = cmd.status();
-            eprintln!("process {} stopped with status {:?}", self.name, ret);
-        }
-        state.with_process(self.uniq_id, |child| {
-            let r1 = child.kill();
-            let r2 = child.wait(); // 防 zombie
-            eprintln!("process {} kill with status {:?} -> {:?}", self.name, r1, r2);
-        });
-
-        if state.is_running(self.uniq_id) {
-            return;
-        }
-
-        state.update_ui(self.uniq_id, false);
-    }
-
-    fn restart(&self, state: &Arc<AppState>) {
-        self.stop(state);
-        self.start(state);
-    }
-}
-
-fn load_cfg() -> anyhow::Result<AppConfig> {
-    let args = Args::parse();
-    let cfg_path = args.config.as_str();
-    eprintln!("using config {}", cfg_path);
-
-    let settings = config::Config::builder()
-        .add_source(config::File::with_name(cfg_path))
-        .build()?;
-
-    let cfg: AppConfig = settings.try_deserialize()?;
-    Ok(cfg)
-}
-
-fn get_icon(running: bool) -> Icon {
-    if running {
-        return Icon::from_rgba(circle_rgba(0, 200, 0), 32, 32).unwrap();
-    }
-    return Icon::from_rgba(circle_rgba(200, 0, 0), 32, 32).unwrap();
-}
+// ================= 图标 =================
 
 fn circle_rgba(r: u8, g: u8, b: u8) -> Vec<u8> {
     let mut pixels = vec![0u8; 32 * 32 * 4];
-
     for y in 0..32 {
         for x in 0..32 {
-            let dist = ((x as f32 - 16.0).powi(2) + (y as f32 - 16.0).powi(2)).sqrt();
+            let dx = x as f32 - 16.0;
+            let dy = y as f32 - 16.0;
+            let dist = (dx * dx + dy * dy).sqrt();
+
             let idx = (y * 32 + x) * 4;
 
             if dist < 14.0 {
@@ -355,188 +370,199 @@ fn circle_rgba(r: u8, g: u8, b: u8) -> Vec<u8> {
     pixels
 }
 
-trait MenuLike {
-    fn add_item(&mut self, item: &dyn IsMenuItem);
+fn get_menu_icon(running: bool) -> tray_icon::menu::Icon {
+    let rgba = if running {
+        circle_rgba(0, 200, 0)
+    } else {
+        circle_rgba(200, 0, 0)
+    };
+
+    tray_icon::menu::Icon::from_rgba(rgba, 32, 32).unwrap()
 }
 
-impl MenuLike for Menu {
-    fn add_item(&mut self, item: &dyn IsMenuItem) {
-        self.append(item).unwrap();
-    }
+fn load_icon() -> tray_icon::Icon {
+    let img = image::load_from_memory(include_bytes!("../icons/tray.png"))
+        .unwrap()
+        .into_rgba8();
+
+    let (w, h) = img.dimensions();
+    tray_icon::Icon::from_rgba(img.into_raw(), w, h).unwrap()
 }
 
-impl MenuLike for Submenu {
-    fn add_item(&mut self, item: &dyn IsMenuItem) {
-        self.append(item).unwrap();
-    }
+use std::sync::OnceLock;
+
+static IS_ZH: OnceLock<bool> = OnceLock::new();
+
+fn is_zh() -> bool {
+    *IS_ZH.get_or_init(|| {
+        sys_locale::get_locale()
+            .unwrap_or_else(|| "en-US".to_string())
+            .to_lowercase()
+            .starts_with("zh")
+    })
 }
 
-fn main() {
+fn lang_text<'a>(zh: &'a str, en: &'a str) -> &'a str {
+    if is_zh() { zh } else { en }
+}
+
+// ================= main =================
+
+const EVENT_QUIT: &str = "quit";
+
+#[tokio::main]
+async fn main() {
     let cfg = load_cfg().unwrap();
-    println!("cfg->  {:#?}", &cfg);
 
     let event_loop = EventLoopBuilder::new().build();
 
-    let mut actions: HashMap<String, Box<dyn FnMut()>> = HashMap::new();
-
-    let mut add_menu_item = |menu: &mut dyn MenuLike, label: &str, id: &str, f: Box<dyn FnMut()>| {
-        let item = MenuItem::with_id(id, label, true, None);
-        menu.add_item(&item);
-        actions.insert(id.to_string(), f);
-        return item;
-    };
+    let (tx, mut rx) = mpsc::unbounded_channel();
 
     let state = Arc::new(AppState {
-        apps: Mutex::new(HashMap::new()),
-        config: cfg.clone(),
+        procs: Mutex::new(HashMap::new()),
+        tx,
     });
 
-    let mut menu = Menu::new();
+    let menu = Menu::new();
+    let mut actions: HashMap<String, Box<dyn FnMut()>> = HashMap::new();
+    let mut ui_map: HashMap<usize, UiEntry> = HashMap::new();
+
     let separator = PredefinedMenuItem::separator();
     {
         let mi = MenuItem::new(&cfg.title, true, None);
         menu.append(&mi).unwrap();
+        menu.append(&separator).unwrap();
     }
-
-    let mut add_app = |menu: &mut dyn MenuLike, index: usize, item: AppItem| {
-        let item_arc = Arc::new(item.clone());
-
-        let item_start = Arc::clone(&item_arc);
-        let state_start = Arc::clone(&state);
-        let start_item = add_menu_item(
-            menu,
-            "Start",
-            &format!("{}_start", index),
-            Box::new(move || {
-                item_start.start(&state_start);
-            }),
-        );
-
-        let item_stop = Arc::clone(&item_arc);
-        let state_stop = Arc::clone(&state);
-        let stop_item = add_menu_item(
-            menu,
-            "Stop",
-            &format!("{}_stop", index),
-            Box::new(move || {
-                item_stop.stop(&state_stop);
-            }),
-        );
-        stop_item.set_enabled(false);
-
-        let item_restart = Arc::clone(&item_arc);
-        let state_restart = Arc::clone(&state);
-        let restart_item = add_menu_item(
-            menu,
-            "Restart",
-            &format!("{}_restart", index),
-            Box::new(move || {
-                item_restart.restart(&state_restart);
-            }),
-        );
-        restart_item.set_enabled(false);
-
-        let mut open_item: Option<Arc<MenuItem>> = None;
-        {
-            let item_open = Arc::clone(&item_arc);
-            if !item_open.address.is_empty() {
-                let item = add_menu_item(
-                    menu,
-                    "Browser",
-                    &format!("{}_open_browser", index),
-                    Box::new(move || {
-                        eprintln!("{} open browser ...", &item_open.name);
-                        webbrowser::open(&item_open.address).unwrap();
-                    }),
-                );
-                item.set_enabled(false);
-                open_item = Some(Arc::new(item));
-            }
-        }
-
-        let app_menu = AppMenu {
-            title: None,
-            start: Arc::new(start_item),
-            stop: Arc::new(stop_item),
-            restart: Arc::new(restart_item),
-            open: open_item,
-        };
-        let app_info = AppEntry {
-            menu: Mutex::new(app_menu),
-            proc: Mutex::new(ProcessInfo { process: None }),
-        };
-        state.apps.lock().unwrap().insert(item_arc.uniq_id, Arc::new(app_info));
-    };
-
     for (index, item) in cfg.groups.iter().enumerate() {
-        if cfg.groups.len() > 1 {
-            if index == 0 {
-                menu.append(&separator).unwrap();
-            }
-            let mut sub_menu = tray_icon::menu::Submenu::new(&item.name, true);
-            {
-                let mi = IconMenuItem::new(&item.name, true, None, None);
-                sub_menu.append(&mi).unwrap();
-                sub_menu.append(&separator).unwrap();
-            }
+        // menu.append(&separator).unwrap();
 
-            add_app(&mut sub_menu, index, item.clone());
-            menu.append(&sub_menu).unwrap();
+        let sub = Submenu::new(&item.name, true);
 
-            state
-                .clone()
-                .set_title_menu(item.uniq_id, Arc::new(TitleMenu::Submenu(sub_menu)));
-        } else {
-            menu.append(&separator).unwrap();
-            let mi = IconMenuItem::new(&item.name, true, None, None);
-            menu.append(&mi).unwrap();
-            menu.append(&separator).unwrap();
-
-            add_app(&mut menu, index, item.clone());
-            state
-                .clone()
-                .set_title_menu(item.uniq_id, Arc::new(TitleMenu::Icon(mi)));
+        {
+            let mi = MenuItem::new(&item.name, true, None);
+            sub.append(&mi).unwrap();
+            sub.append(&separator).unwrap();
         }
+
+        let start_id = format!("{}_start", index);
+        let stop_id = format!("{}_stop", index);
+        let restart_id = format!("{}_restart", index);
+
+        let start = MenuItem::with_id(&start_id, lang_text("启动", "Start"), true, None);
+        let stop = MenuItem::with_id(&stop_id, lang_text("停止", "Stop"), false, None);
+        let restart = MenuItem::with_id(&restart_id, lang_text("重启", "Restart"), false, None);
+
+        sub.append(&start).unwrap();
+        sub.append(&stop).unwrap();
+        sub.append(&restart).unwrap();
+
+        let mut open_browser: Option<IconMenuItem> = None;
+        {
+            let open_id = format!("{}_browser", index);
+            if !item.address.is_empty() {
+                sub.append(&separator).unwrap();
+                {
+                    let mi = IconMenuItem::with_id(&open_id, lang_text("打开", "Browser"), false, None, None);
+                    sub.append(&mi).unwrap();
+                    open_browser = Some(mi.clone());
+                }
+
+                {
+                    let item_arc = Arc::new(item.clone());
+                    let s = state.clone();
+                    actions.insert(open_id, Box::new(move || item_arc.open_browser(&s)));
+                }
+            }
+        }
+
+        menu.append(&sub).unwrap();
+        {
+            let ui = UiEntry {
+                start: start.clone(),
+                stop: stop.clone(),
+                restart: restart.clone(),
+                title: TitleMenu::Submenu(sub),
+                open: open_browser,
+            };
+            ui.set_running(false);
+            ui_map.insert(item.uniq_id, ui);
+        }
+
+        let item_arc = Arc::new(item.clone());
+        let s = state.clone();
+        actions.insert(start_id, Box::new(move || item_arc.start(&s)));
+
+        let item_arc = Arc::new(item.clone());
+        let s = state.clone();
+        actions.insert(stop_id, Box::new(move || item_arc.stop(&s)));
+
+        let item_arc = Arc::new(item.clone());
+        let s = state.clone();
+        actions.insert(restart_id, Box::new(move || item_arc.restart(&s)));
     }
 
-    menu.append(&separator).unwrap();
-    let state_quit = Arc::clone(&state);
-    add_menu_item(
-        &mut menu,
-        "Quit",
-        "quit",
-        Box::new(move || {
-            state_quit.stop_all();
-            std::process::exit(0)
-        }),
-    );
+    // ===== Quit =====
+    {
+        let state_quit = state.clone();
+        actions.insert(EVENT_QUIT.to_string(), Box::new(move || state_quit.stop_all()));
+
+        menu.append(&separator).unwrap();
+        let quit_item = MenuItem::with_id(EVENT_QUIT, lang_text("退出", "Quit"), true, None);
+        menu.append(&quit_item).unwrap();
+    }
 
     let _tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_icon(cfg.load_icon())
-        .with_tooltip(cfg.title)
+        .with_tooltip(cfg.title.clone())
         .build()
         .unwrap();
 
-    state.auto_start();
+    // auto start
+    for item in &cfg.groups {
+        if item.auto_start {
+            item.start(&state);
+
+            if item.auto_open {
+                item.open_browser(&state);
+            }
+        }
+    }
 
     event_loop.run(move |_event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+
+        while let Ok((id, running)) = rx.try_recv() {
+            eprintln!("receive tx ({},{})", id, running);
+            if let Some(ui) = ui_map.get_mut(&id) {
+                ui.set_running(running);
+            }
+        }
+
         if let Ok(event) = MenuEvent::receiver().try_recv() {
-            if let Some(action) = actions.get_mut(event.id.0.as_str()) {
+            let eid = event.id.0.as_str();
+            eprintln!("receive event {:?} , eid={})", event, eid);
+            if let Some(action) = actions.get_mut(eid) {
+                eprintln!("action executed");
                 action();
+            }
+
+            if eid == EVENT_QUIT {
+                *control_flow = ControlFlow::Exit;
+                return;
             }
         }
     });
 }
 
-fn load_icon() -> tray_icon::Icon {
-    let (icon_rgba, icon_width, icon_height) = {
-        let image = image::load_from_memory(include_bytes!("../icons/tray.png"))
-            .expect("Failed to load icon")
-            .into_rgba8();
-        let (width, height) = image.dimensions();
-        (image.into_raw(), width, height)
-    };
-    tray_icon::Icon::from_rgba(icon_rgba, icon_width, icon_height).expect("Failed to create icon")
+// ================= config =================
+
+fn load_cfg() -> anyhow::Result<AppConfig> {
+    let args = Args::parse();
+
+    let cfg = config::Config::builder()
+        .add_source(config::File::with_name(&args.config))
+        .build()?;
+
+    Ok(cfg.try_deserialize()?)
 }
