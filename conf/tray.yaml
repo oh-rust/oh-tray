@@ -5,7 +5,7 @@ groups:
     home: "D:\\soft\\my\\aimux"  # 此子组程序的工作目录，可选，默认为空。后续 Icon、Start、Stop、Restart 命令均相对于此目录。
     icon: ""  # 图标地址，可选
     start: ".\\bin\\aimux.exe"  # 显示子菜单item:Start，当此进程已启动后，是正常运行则设置为不可用。若进程退出则设置为可用
-    stop: ""  # 显示子菜单item:Stop，当此进程未启动，设置为不可用，若进程运行中则设置为可用。
+    stop: "taskkill /F /IM aimux.exe"  # 显示子菜单 item:Stop，当此进程未启动，设置为不可用，若进程运行中则设置为可用。
     restart: ""  # 有值时，显示子菜单item:ReStart，当进程运行中，则设置为可用，否则为不可用
     auto_start: true  # 启动进程时是否自动启动该子组，不需要显示为菜单，此配置项可选，默认为 true
     keep_alive: true  # 若进程异常退出，是否自动启动，不需要显示为菜单，此配置项可选，默认为 true
@@ -19,6 +19,9 @@ groups:
     stop: "停止命令"
     restart: "重启命令"
     auto_start: false  # 启动进程时是否自动启动该子组
+    opens:
+      - title: github
+        address: https://github.com/
 
   - name: "子组应用名称3"
     home: "/home/work/app2/"

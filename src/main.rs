@@ -60,6 +60,9 @@ struct AppItem {
 
     #[serde(skip_deserializing, default = "next_runtime_id")]
     uniq_id: usize,
+
+    #[serde(default)]
+    opens: Vec<AppOpenBrowser>,
 }
 
 fn default_true() -> bool {
@@ -69,6 +72,21 @@ fn default_true() -> bool {
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 fn next_runtime_id() -> usize {
     NEXT_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AppOpenBrowser {
+    title: String,
+    address: String,
+}
+
+impl AppOpenBrowser {
+    fn open_browser(&self) {
+        eprintln!("{} open browser {} ...", &self.title, &self.address);
+        if let Err(e) = webbrowser::open(&self.address) {
+            eprintln!("Failed to open browser for {}: {:?}", self.address, e);
+        }
+    }
 }
 
 impl AppConfig {
@@ -126,7 +144,7 @@ struct UiEntry {
     stop: MenuItem,
     restart: MenuItem,
     title: TitleMenu,
-    open: Option<IconMenuItem>,
+    // open: Option<IconMenuItem>,
 }
 
 enum TitleMenu {
@@ -148,9 +166,9 @@ impl UiEntry {
               // }
         }
 
-        if let Some(icon) = &self.open {
-            icon.set_enabled(running);
-        }
+        // if let Some(icon) = &self.open {
+        //     icon.set_enabled(running);
+        // }
     }
 }
 
@@ -250,6 +268,28 @@ impl AppItem {
         eprintln!("async App.Stop called");
         let item = self.clone();
         let state = state.clone();
+
+        // 先尝试使用自定义的 stop 命令停止应用
+        if !item.stop.is_empty() {
+            let mut cmd = build_shell(&item.stop);
+
+            if !item.home.is_empty() {
+                cmd.current_dir(&item.home);
+            }
+            match cmd.group_spawn() {
+                Ok(mut child) => {
+                    let ret = child.wait().await;
+                    eprintln!(
+                        "[app.a_stop] {} execute stop command success, status={:?}",
+                        &item.name, ret
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[app.a_stop] {} execute stop command failed:{:?}", &item.name, e);
+                }
+            }
+        }
+
         let maybe_child = {
             let mut procs = state.procs.lock().await;
             procs.remove(&item.uniq_id)
@@ -275,7 +315,7 @@ impl AppItem {
         tokio::spawn(async move {
             eprintln!("restart >>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
             item.a_stop(&state).await;
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             item.a_start(&state).await;
             eprintln!("restart <<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
         });
@@ -439,7 +479,7 @@ async fn main() {
         let sub = Submenu::new(&item.name, true);
 
         {
-            let mi = MenuItem::new(&item.name, true, None);
+            let mi = MenuItem::new(format!("{}", &item.name), true, None);
             sub.append(&mi).unwrap();
             sub.append(&separator).unwrap();
         }
@@ -448,23 +488,23 @@ async fn main() {
         let stop_id = format!("{}_stop", index);
         let restart_id = format!("{}_restart", index);
 
-        let start = MenuItem::with_id(&start_id, lang_text("启动", "Start"), true, None);
-        let stop = MenuItem::with_id(&stop_id, lang_text("停止", "Stop"), false, None);
-        let restart = MenuItem::with_id(&restart_id, lang_text("重启", "Restart"), false, None);
+        let start = MenuItem::with_id(&start_id, lang_text(" ▶️   启  动", "▶️  Start"), true, None);
+        let stop = MenuItem::with_id(&stop_id, lang_text("⏹️  停  止", "⏹️  Stop"), false, None);
+        let restart = MenuItem::with_id(&restart_id, lang_text("🔁  重  启", "🔁  Restart"), false, None);
 
         sub.append(&start).unwrap();
         sub.append(&stop).unwrap();
         sub.append(&restart).unwrap();
 
-        let mut open_browser: Option<IconMenuItem> = None;
+        // let mut open_browser: Option<IconMenuItem> = None;
         {
             let open_id = format!("{}_browser", index);
             if !item.address.is_empty() {
                 sub.append(&separator).unwrap();
                 {
-                    let mi = IconMenuItem::with_id(&open_id, lang_text("打开", "Browser"), false, None, None);
+                    let mi = IconMenuItem::with_id(&open_id, lang_text("🌐  打  开", "🌐  Open"), true, None, None);
                     sub.append(&mi).unwrap();
-                    open_browser = Some(mi.clone());
+                    // open_browser = Some(mi.clone());
                 }
 
                 {
@@ -475,6 +515,20 @@ async fn main() {
             }
         }
 
+        {
+            for (si, ss) in item.opens.iter().enumerate() {
+                if si == 0 {
+                    sub.append(&separator).unwrap();
+                }
+                let bb_id = format!("{}_browser_{}", index, si);
+                let mi = IconMenuItem::with_id(&bb_id, format!("↗️ {}", &ss.title), true, None, None);
+                sub.append(&mi).unwrap();
+
+                let ss_arc = Arc::new(ss.clone());
+                actions.insert(bb_id, Box::new(move || ss_arc.open_browser()));
+            }
+        }
+
         menu.append(&sub).unwrap();
         {
             let ui = UiEntry {
@@ -482,7 +536,7 @@ async fn main() {
                 stop: stop.clone(),
                 restart: restart.clone(),
                 title: TitleMenu::Submenu(sub),
-                open: open_browser,
+                // open: open_browser,
             };
             ui.set_running(false);
             ui_map.insert(item.uniq_id, ui);
@@ -507,7 +561,7 @@ async fn main() {
         actions.insert(EVENT_QUIT.to_string(), Box::new(move || state_quit.stop_all()));
 
         menu.append(&separator).unwrap();
-        let quit_item = MenuItem::with_id(EVENT_QUIT, lang_text("退出", "Quit"), true, None);
+        let quit_item = MenuItem::with_id(EVENT_QUIT, lang_text("❌  退   出", "❌ Quit"), true, None);
         menu.append(&quit_item).unwrap();
     }
 
@@ -521,7 +575,7 @@ async fn main() {
     // auto start
     for item in &cfg.groups {
         if item.auto_start {
-            item.start(&state);
+            item.restart(&state);
 
             if item.auto_open {
                 item.open_browser(&state);
