@@ -18,7 +18,7 @@ use tray_icon::{
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long, default_value = "conf/tray.yaml")]
+    #[arg(short, long, default_value = "conf/tray.yml")]
     pub config: String,
 }
 
