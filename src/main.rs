@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-
+use tao::event::Event;
 use tokio::process::Command;
 use tokio::sync::{Mutex, mpsc};
 
@@ -46,9 +46,8 @@ struct AppItem {
     #[serde(default)]
     stop: String,
 
-    #[serde(default)]
-    restart: String,
-
+    // #[serde(default)]
+    // restart: String,
     #[serde(default = "default_true")]
     auto_start: bool,
 
@@ -126,13 +125,18 @@ impl AppState {
         let state = self.clone();
         tokio::spawn(async move {
             let procs = state.procs.lock().await;
-
-            for (index, child) in procs.iter() {
-                let mut c = child.lock().await;
-                let ret1 = c.kill().await;
-                let ret2 = c.wait().await;
-                eprintln!("kill {} {:?},{:?}", index, ret1, ret2);
-            }
+            eprintln!("found procs: {}", procs.len());
+            // 并行 kill
+            let futures = procs.iter().map(|(index, child)| {
+                let child = child.clone();
+                async move {
+                    let mut c = child.lock().await;
+                    let ret1 = c.kill().await;
+                    let ret2 = c.wait().await;
+                    eprintln!("kill {} {:?},{:?}", index, ret1, ret2);
+                }
+            });
+            futures::future::join_all(futures).await;
         });
     }
 }
@@ -331,14 +335,12 @@ impl AppItem {
 
 // ================= util =================
 
-// #[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
-use std::env;
-use std::fs;
-
 fn build_shell(cmd: &str) -> Command {
-    if cfg!(target_os = "windows") {
+    #[cfg(target_os = "windows")]
+    {
+        use std::env;
+        use std::fs;
+        use std::os::windows::process::CommandExt;
         // let has_ps = std::process::Command::new("powershell")
         //     .arg("-Command")
         //     .arg("exit")
@@ -371,6 +373,7 @@ fn build_shell(cmd: &str) -> Command {
 
         let _ = fs::write(&vbs_path, vbs_content);
         let mut c = Command::new("wscript.exe");
+
         c.arg(&vbs_path);
         c.as_std_mut().creation_flags(0x08000000);
 
@@ -380,7 +383,10 @@ fn build_shell(cmd: &str) -> Command {
         });
 
         c
-    } else {
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
         let mut c = Command::new("sh");
         c.args(["-c", cmd]);
         c
@@ -583,28 +589,38 @@ async fn main() {
         }
     }
 
-    event_loop.run(move |_event, _, control_flow| {
+    let state_destroy = state.clone();
+    event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+        match event {
+            Event::LoopDestroyed => {
+                eprintln!("Event::LoopDestroyed -> tray exiting");
+                state_destroy.stop_all()
 
-        while let Ok((id, running)) = rx.try_recv() {
-            eprintln!("receive tx ({},{})", id, running);
-            if let Some(ui) = ui_map.get_mut(&id) {
-                ui.set_running(running);
             }
-        }
+            Event::MainEventsCleared =>{
+                while let Ok((id, running)) = rx.try_recv() {
+                    eprintln!("receive tx ({},{})", id, running);
+                    if let Some(ui) = ui_map.get_mut(&id) {
+                        ui.set_running(running);
+                    }
+                }
 
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
-            let eid = event.id.0.as_str();
-            eprintln!("receive event {:?} , eid={})", event, eid);
-            if let Some(action) = actions.get_mut(eid) {
-                eprintln!("action executed");
-                action();
-            }
+                if let Ok(event) = MenuEvent::receiver().try_recv() {
+                    let eid = event.id.0.as_str();
+                    eprintln!("receive event {:?} , eid={})", event, eid);
+                    if let Some(action) = actions.get_mut(eid) {
+                        eprintln!("action executed");
+                        action();
+                    }
 
-            if eid == EVENT_QUIT {
-                *control_flow = ControlFlow::Exit;
-                return;
+                    if eid == EVENT_QUIT {
+                        *control_flow = ControlFlow::Exit;
+                        return;
+                    }
+                }
             }
+            _ =>{}
         }
     });
 }

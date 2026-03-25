@@ -17,6 +17,7 @@ config = "0.15.22"
 clap = { version = "4.6.0",features = ["derive"] }
 tokio = { version = "1.50.0",features = ["full"] }
 sys-locale = "0.3.2"
+futures = "0.3.32"
 
 
 [profile.release]
