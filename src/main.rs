@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::event::Event;
+use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tokio::process::Command;
 use tokio::sync::{Mutex, mpsc};
 
@@ -37,7 +37,7 @@ struct AppConfig {
 
     /// 日志文件地址前缀，默认为当前
     #[serde(default)]
-    log_prefix:String,
+    log_prefix: String,
 
     #[serde(default)]
     groups: Vec<AppItem>,
@@ -489,45 +489,72 @@ async fn main() {
         menu.append(&mi).unwrap();
         menu.append(&separator).unwrap();
     }
+
     for (index, item) in cfg.groups.iter().enumerate() {
         // menu.append(&separator).unwrap();
 
         let sub = Submenu::new(&item.name, true);
 
         {
-            let mi = MenuItem::new(format!("{}", &item.name), true, None);
+            let mi = IconMenuItem::new(format!("  {}", &item.name), true, None, None);
             sub.append(&mi).unwrap();
             sub.append(&separator).unwrap();
         }
-
-        let start_id = format!("{}_start", index);
-        let stop_id = format!("{}_stop", index);
-        let restart_id = format!("{}_restart", index);
-
-        let start = MenuItem::with_id(&start_id, lang_text(" ▶️   启  动", "▶️  Start"), true, None);
-        let stop = MenuItem::with_id(&stop_id, lang_text("⏹️  停  止", "⏹️  Stop"), false, None);
-        let restart = MenuItem::with_id(&restart_id, lang_text("🔁  重  启", "🔁  Restart"), false, None);
-
-        sub.append(&start).unwrap();
-        sub.append(&stop).unwrap();
-        sub.append(&restart).unwrap();
 
         // let mut open_browser: Option<IconMenuItem> = None;
         {
             let open_id = format!("{}_browser", index);
             if !item.address.is_empty() {
-                sub.append(&separator).unwrap();
                 {
-                    let mi = IconMenuItem::with_id(&open_id, lang_text("🌐  打  开", "🌐  Open"), true, None, None);
+                    let mi = MenuItem::with_id(&open_id, lang_text("🌐  打  开", "🌐  Open"), true, None);
                     sub.append(&mi).unwrap();
                     // open_browser = Some(mi.clone());
                 }
+                sub.append(&separator).unwrap();
 
                 {
                     let item_arc = Arc::new(item.clone());
                     let s = state.clone();
                     actions.insert(open_id, Box::new(move || item_arc.open_browser(&s)));
                 }
+            }
+        }
+
+        {
+            let start_id = format!("{}_start", index);
+            let stop_id = format!("{}_stop", index);
+            let restart_id = format!("{}_restart", index);
+
+            let start = MenuItem::with_id(&start_id, lang_text(" ▶️   启  动", " ▶️  Start"), true, None);
+            let stop = MenuItem::with_id(&stop_id, lang_text("⏹️  停  止", "⏹️  Stop"), false, None);
+            let restart = MenuItem::with_id(&restart_id, lang_text("🔁  重  启", "🔁  Restart"), false, None);
+
+            sub.append(&start).unwrap();
+            sub.append(&stop).unwrap();
+            sub.append(&restart).unwrap();
+
+            let item_arc = Arc::new(item.clone());
+            let s = state.clone();
+            actions.insert(start_id, Box::new(move || item_arc.start(&s)));
+
+            let item_arc = Arc::new(item.clone());
+            let s = state.clone();
+            actions.insert(stop_id, Box::new(move || item_arc.stop(&s)));
+
+            let item_arc = Arc::new(item.clone());
+            let s = state.clone();
+            actions.insert(restart_id, Box::new(move || item_arc.restart(&s)));
+
+            {
+                let ui = UiEntry {
+                    start: start.clone(),
+                    stop: stop.clone(),
+                    restart: restart.clone(),
+                    title: TitleMenu::Submenu(sub.clone()),
+                    // open: open_browser,
+                };
+                ui.set_running(false);
+                ui_map.insert(item.uniq_id, ui);
             }
         }
 
@@ -546,30 +573,7 @@ async fn main() {
         }
 
         menu.append(&sub).unwrap();
-        {
-            let ui = UiEntry {
-                start: start.clone(),
-                stop: stop.clone(),
-                restart: restart.clone(),
-                title: TitleMenu::Submenu(sub),
-                // open: open_browser,
-            };
-            ui.set_running(false);
-            ui_map.insert(item.uniq_id, ui);
-        }
-
-        let item_arc = Arc::new(item.clone());
-        let s = state.clone();
-        actions.insert(start_id, Box::new(move || item_arc.start(&s)));
-
-        let item_arc = Arc::new(item.clone());
-        let s = state.clone();
-        actions.insert(stop_id, Box::new(move || item_arc.stop(&s)));
-
-        let item_arc = Arc::new(item.clone());
-        let s = state.clone();
-        actions.insert(restart_id, Box::new(move || item_arc.restart(&s)));
-    }
+    } // end for groups
 
     // ===== Quit =====
     {
@@ -606,9 +610,8 @@ async fn main() {
             Event::LoopDestroyed => {
                 eprintln!("Event::LoopDestroyed -> tray exiting");
                 state_destroy.stop_all()
-
             }
-            Event::MainEventsCleared =>{
+            Event::MainEventsCleared => {
                 while let Ok((id, running)) = rx.try_recv() {
                     eprintln!("receive tx ({},{})", id, running);
                     if let Some(ui) = ui_map.get_mut(&id) {
@@ -630,7 +633,7 @@ async fn main() {
                     }
                 }
             }
-            _ =>{}
+            _ => {}
         }
     });
 }
@@ -647,16 +650,15 @@ fn load_cfg() -> anyhow::Result<AppConfig> {
     Ok(cfg.try_deserialize()?)
 }
 
-
 impl AppConfig {
-    fn setup(&self){
+    fn setup(&self) {
         if !self.home.is_empty() {
             std::env::set_current_dir(&self.home).unwrap();
         }
 
-        if !self.log_prefix.is_empty() && self.log_prefix.ne("no"){
-            let filename=format!("{}_stderr.log", self.log_prefix);
-            match  std::fs::File::create(&filename ) {
+        if !self.log_prefix.is_empty() && self.log_prefix.ne("no") {
+            let filename = format!("{}_stderr.log", self.log_prefix);
+            match std::fs::File::create(&filename) {
                 Ok(file) => {
                     redirect_stderr(&file);
 
@@ -664,11 +666,10 @@ impl AppConfig {
                     std::mem::forget(file);
                 }
                 Err(e) => {
-                    eprintln!("create log file {}: {}", filename,e);
+                    eprintln!("create log file {}: {}", filename, e);
                 }
             }
         }
-
     }
 }
 
