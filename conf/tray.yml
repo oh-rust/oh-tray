@@ -1,5 +1,6 @@
 title: "应用标题"
 icon: "icons/icon.png"  # 可选，自定义托盘图标
+#log_prefix: "log/tray" # 日志文件前缀，需要目录已经存在，不为空时有效
 groups:
   - name: "aimux"  # 显示子菜单item
     home: "D:\\soft\\my\\aimux"  # 此子组程序的工作目录，可选，默认为空。后续 Icon、Start、Stop、Restart 命令均相对于此目录。
@@ -16,7 +17,7 @@ groups:
     auto_start: false  # 启动进程时是否自动启动该子组
     opens:
       - title: github
-        address: https://github.com/
+        uri: https://github.com/
 
   - name: "子组应用名称3"
     home: "/home/work/app2/"

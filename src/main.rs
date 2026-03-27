@@ -27,8 +27,17 @@ struct AppConfig {
     #[serde(default)]
     title: String,
 
+    /// tray 的根目录，默认为空
+    /// 若不为空，则启动应用后先切换到此目录下
+    #[serde(default)]
+    home: String,
+
     #[serde(default)]
     icon: String,
+
+    /// 日志文件地址前缀，默认为当前
+    #[serde(default)]
+    log_prefix:String,
 
     #[serde(default)]
     groups: Vec<AppItem>,
@@ -61,7 +70,7 @@ struct AppItem {
     uniq_id: usize,
 
     #[serde(default)]
-    opens: Vec<AppOpenBrowser>,
+    opens: Vec<AppOpenURI>,
 }
 
 fn default_true() -> bool {
@@ -74,16 +83,16 @@ fn next_runtime_id() -> usize {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct AppOpenBrowser {
+struct AppOpenURI {
     title: String,
-    address: String,
+    uri: String,
 }
 
-impl AppOpenBrowser {
-    fn open_browser(&self) {
-        eprintln!("{} open browser {} ...", &self.title, &self.address);
-        if let Err(e) = webbrowser::open(&self.address) {
-            eprintln!("Failed to open browser for {}: {:?}", self.address, e);
+impl AppOpenURI {
+    fn open(&self) {
+        eprintln!("{} open browser {} ...", &self.title, &self.uri);
+        if let Err(e) = webbrowser::open(&self.uri) {
+            eprintln!("Failed to open browser for {}: {:?}", self.uri, e);
         }
     }
 }
@@ -459,6 +468,7 @@ const EVENT_QUIT: &str = "quit";
 #[tokio::main]
 async fn main() {
     let cfg = load_cfg().unwrap();
+    cfg.setup();
 
     let event_loop = EventLoopBuilder::new().build();
 
@@ -526,12 +536,12 @@ async fn main() {
                 if si == 0 {
                     sub.append(&separator).unwrap();
                 }
-                let bb_id = format!("{}_browser_{}", index, si);
+                let bb_id = format!("{}_open_uri_{}", index, si);
                 let mi = IconMenuItem::with_id(&bb_id, format!("↗️ {}", &ss.title), true, None, None);
                 sub.append(&mi).unwrap();
 
                 let ss_arc = Arc::new(ss.clone());
-                actions.insert(bb_id, Box::new(move || ss_arc.open_browser()));
+                actions.insert(bb_id, Box::new(move || ss_arc.open()));
             }
         }
 
@@ -635,4 +645,48 @@ fn load_cfg() -> anyhow::Result<AppConfig> {
         .build()?;
 
     Ok(cfg.try_deserialize()?)
+}
+
+
+impl AppConfig {
+    fn setup(&self){
+        if !self.home.is_empty() {
+            std::env::set_current_dir(&self.home).unwrap();
+        }
+
+        if !self.log_prefix.is_empty() && self.log_prefix.ne("no"){
+            let filename=format!("{}_stderr.log", self.log_prefix);
+            match  std::fs::File::create(&filename ) {
+                Ok(file) => {
+                    redirect_stderr(&file);
+
+                    // 避免 file 被 drop
+                    std::mem::forget(file);
+                }
+                Err(e) => {
+                    eprintln!("create log file {}: {}", filename,e);
+                }
+            }
+        }
+
+    }
+}
+
+#[cfg(unix)]
+fn redirect_stderr(file: &std::fs::File) {
+    use std::os::unix::io::AsRawFd;
+    unsafe {
+        libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+    }
+}
+
+#[cfg(windows)]
+fn redirect_stderr(file: &std::fs::File) {
+    use std::os::windows::io::AsRawHandle;
+    unsafe {
+        windows_sys::Win32::System::Console::SetStdHandle(
+            windows_sys::Win32::System::Console::STD_ERROR_HANDLE,
+            file.as_raw_handle() as *mut std::ffi::c_void,
+        );
+    }
 }
