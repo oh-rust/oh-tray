@@ -119,6 +119,61 @@ impl AppConfig {
 
         load_icon()
     }
+
+    fn setup(&self) {
+        if !self.home.is_empty() {
+            std::env::set_current_dir(&self.home).unwrap();
+        }
+
+        if !self.log_prefix.is_empty() && self.log_prefix.ne("no") {
+            let filename = format!("{}_stderr.log", self.log_prefix);
+            match std::fs::File::create(&filename) {
+                Ok(file) => {
+                    redirect_stderr(&file);
+
+                    // 避免 file 被 drop
+                    std::mem::forget(file);
+                }
+                Err(e) => {
+                    eprintln!("create log file {}: {}", filename, e);
+                }
+            }
+        }
+    }
+
+    fn auto_start_all(&self, state: &Arc<AppState>) {
+        for item in &self.groups {
+            if item.auto_start {
+                item.restart(&state);
+
+                if item.auto_open {
+                    item.open_browser(&state);
+                }
+            }
+        }
+    }
+
+    fn stop_all(&self,state: &Arc<AppState>) {
+        eprintln!("stopping all apps ...");
+        let groups = self.groups.clone();
+        let state = state.clone();
+
+        let (tx,  rx) = std::sync::mpsc::channel();
+        tokio::spawn(async move {
+            let futures=groups.iter().map(| child|{
+                let child=child.clone();
+                let cs=state.clone();
+                async move {
+                    child.a_stop(&cs).await;
+                }
+            });
+            eprintln!("async {} futures",futures.len());
+            futures::future::join_all(futures).await;
+            let _ = tx.send(());
+        });
+        let _ = rx.recv();
+        eprintln!("stopped all apps finished");
+    }
 }
 
 // ================= 状态 =================
@@ -128,27 +183,27 @@ struct AppState {
     tx: mpsc::UnboundedSender<(usize, bool)>,
 }
 
-impl AppState {
-    fn stop_all(self: &Arc<Self>) {
-        eprintln!("stopping all apps ...");
-        let state = self.clone();
-        tokio::spawn(async move {
-            let procs = state.procs.lock().await;
-            eprintln!("found procs: {}", procs.len());
-            // 并行 kill
-            let futures = procs.iter().map(|(index, child)| {
-                let child = child.clone();
-                async move {
-                    let mut c = child.lock().await;
-                    let ret1 = c.kill().await;
-                    let ret2 = c.wait().await;
-                    eprintln!("kill {} {:?},{:?}", index, ret1, ret2);
-                }
-            });
-            futures::future::join_all(futures).await;
-        });
-    }
-}
+// impl AppState {
+//     fn stop_all(self: &Arc<Self>) {
+//         eprintln!("stopping all apps ...");
+//         let state = self.clone();
+//         tokio::spawn(async move {
+//             let procs = state.procs.lock().await;
+//             eprintln!("found procs: {}", procs.len());
+//             // 并行 kill
+//             let futures = procs.iter().map(|(index, child)| {
+//                 let child = child.clone();
+//                 async move {
+//                     let mut c = child.lock().await;
+//                     let ret1 = c.kill().await;
+//                     let ret2 = c.wait().await;
+//                     eprintln!("kill {} {:?},{:?}", index, ret1, ret2);
+//                 }
+//             });
+//             futures::future::join_all(futures).await;
+//         });
+//     }
+// }
 
 // ================= UI =================
 
@@ -578,7 +633,10 @@ async fn main() {
     // ===== Quit =====
     {
         let state_quit = state.clone();
-        actions.insert(EVENT_QUIT.to_string(), Box::new(move || state_quit.stop_all()));
+        let cv=cfg.clone();
+        actions.insert(EVENT_QUIT.to_string(), Box::new(move || {
+            cv.stop_all(&state_quit);
+        }));
 
         menu.append(&separator).unwrap();
         let quit_item = MenuItem::with_id(EVENT_QUIT, lang_text("❌  退   出", "❌ Quit"), true, None);
@@ -593,15 +651,7 @@ async fn main() {
         .unwrap();
 
     // auto start
-    for item in &cfg.groups {
-        if item.auto_start {
-            item.restart(&state);
-
-            if item.auto_open {
-                item.open_browser(&state);
-            }
-        }
-    }
+    cfg.auto_start_all(&(state.clone()));
 
     let state_destroy = state.clone();
     event_loop.run(move |event, _, control_flow| {
@@ -609,7 +659,8 @@ async fn main() {
         match event {
             Event::LoopDestroyed => {
                 eprintln!("Event::LoopDestroyed -> tray exiting");
-                state_destroy.stop_all()
+                cfg.stop_all(&state_destroy);
+                // 添加一个sleep ？
             }
             Event::MainEventsCleared => {
                 while let Ok((id, running)) = rx.try_recv() {
@@ -650,28 +701,6 @@ fn load_cfg() -> anyhow::Result<AppConfig> {
     Ok(cfg.try_deserialize()?)
 }
 
-impl AppConfig {
-    fn setup(&self) {
-        if !self.home.is_empty() {
-            std::env::set_current_dir(&self.home).unwrap();
-        }
-
-        if !self.log_prefix.is_empty() && self.log_prefix.ne("no") {
-            let filename = format!("{}_stderr.log", self.log_prefix);
-            match std::fs::File::create(&filename) {
-                Ok(file) => {
-                    redirect_stderr(&file);
-
-                    // 避免 file 被 drop
-                    std::mem::forget(file);
-                }
-                Err(e) => {
-                    eprintln!("create log file {}: {}", filename, e);
-                }
-            }
-        }
-    }
-}
 
 #[cfg(unix)]
 fn redirect_stderr(file: &std::fs::File) {
