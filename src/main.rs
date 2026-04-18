@@ -149,6 +149,10 @@ impl AppConfig {
                 if item.auto_open {
                     item.open_browser(&state);
                 }
+            }else{
+                // 确保服务类的进程，在 tray 启动的时候，是停止状态
+                // 如用 docker compose 启动的进程，在关机后，下次会自动启动
+                item.stop(&state);
             }
         }
     }
