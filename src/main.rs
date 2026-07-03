@@ -149,7 +149,7 @@ impl AppConfig {
                 if item.auto_open {
                     item.open_browser(&state);
                 }
-            }else{
+            } else {
                 // 确保服务类的进程，在 tray 启动的时候，是停止状态
                 // 如用 docker compose 启动的进程，在关机后，下次会自动启动
                 item.stop(&state);
@@ -157,21 +157,21 @@ impl AppConfig {
         }
     }
 
-    fn stop_all(&self,state: &Arc<AppState>) {
+    fn stop_all(&self, state: &Arc<AppState>) {
         eprintln!("stopping all apps ...");
         let groups = self.groups.clone();
         let state = state.clone();
 
-        let (tx,  rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
         tokio::spawn(async move {
-            let futures=groups.iter().map(| child|{
-                let child=child.clone();
-                let cs=state.clone();
+            let futures = groups.iter().map(|child| {
+                let child = child.clone();
+                let cs = state.clone();
                 async move {
                     child.a_stop(&cs).await;
                 }
             });
-            eprintln!("async {} futures",futures.len());
+            eprintln!("async {} futures", futures.len());
             futures::future::join_all(futures).await;
             let _ = tx.send(());
         });
@@ -300,7 +300,10 @@ impl AppItem {
                             let mut c = child.lock().await;
                             match c.try_wait() {
                                 Ok(Some(status)) => {
-                                    eprintln!("[app.a_start] process [{}] exited with status {}", &name, status);
+                                    eprintln!(
+                                        "[app.a_start] process [{}] exited with status {}",
+                                        &name, status
+                                    );
                                     true
                                 }
                                 Ok(None) => false,
@@ -314,14 +317,21 @@ impl AppItem {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     }
 
-                    state_monitor.procs.lock().await.remove(&item_monitor.uniq_id);
+                    state_monitor
+                        .procs
+                        .lock()
+                        .await
+                        .remove(&item_monitor.uniq_id);
 
                     let ret = state_monitor.tx.send((item_monitor.uniq_id, false));
                     eprintln!("[app.a_start] [watch] tx.send stop {:?}", ret);
                 });
             }
             Err(e) => {
-                eprintln!("[app.a_start] start process [{}] failed: {:?}", item.name, e);
+                eprintln!(
+                    "[app.a_start] start process [{}] failed: {:?}",
+                    item.name, e
+                );
             }
         }
     }
@@ -357,7 +367,10 @@ impl AppItem {
                     );
                 }
                 Err(e) => {
-                    eprintln!("[app.a_stop] {} execute stop command failed:{:?}", &item.name, e);
+                    eprintln!(
+                        "[app.a_stop] {} execute stop command failed:{:?}",
+                        &item.name, e
+                    );
                 }
             }
         }
@@ -371,7 +384,10 @@ impl AppItem {
             let pid = c.id().unwrap_or(0);
             let ret1 = c.kill().await;
             let ret2 = c.wait().await;
-            eprintln!("[app.a_stop] stop process {}, kill={:?}, wait={:?}", pid, ret1, ret2);
+            eprintln!(
+                "[app.a_stop] stop process {}, kill={:?}, wait={:?}",
+                pid, ret1, ret2
+            );
         } else {
             eprintln!("[app.a_stop] process not found");
         }
@@ -430,8 +446,7 @@ fn build_shell(cmd: &str) -> Command {
         // c.as_std_mut().creation_flags(0x08000000);
         // c
         let temp_dir = env::temp_dir();
-        let unique_id = Box::into_raw(Box::new(0)) as usize;
-        let file_name = format!("oh_tray_{}.vbs", unique_id);
+        let file_name = format!("oh_tray_{}.vbs", next_runtime_id());
         let vbs_path = temp_dir.join(file_name);
 
         let vbs_content = format!(
@@ -565,7 +580,12 @@ async fn main() {
             let open_id = format!("{}_browser", index);
             if !item.address.is_empty() {
                 {
-                    let mi = MenuItem::with_id(&open_id, lang_text("🌐  打  开", "🌐  Open"), true, None);
+                    let mi = MenuItem::with_id(
+                        &open_id,
+                        lang_text("🌐  打  开", "🌐  Open"),
+                        true,
+                        None,
+                    );
                     sub.append(&mi).unwrap();
                     // open_browser = Some(mi.clone());
                 }
@@ -584,9 +604,20 @@ async fn main() {
             let stop_id = format!("{}_stop", index);
             let restart_id = format!("{}_restart", index);
 
-            let start = MenuItem::with_id(&start_id, lang_text(" ▶️   启  动", " ▶️  Start"), true, None);
-            let stop = MenuItem::with_id(&stop_id, lang_text("⏹️  停  止", "⏹️  Stop"), false, None);
-            let restart = MenuItem::with_id(&restart_id, lang_text("🔁  重  启", "🔁  Restart"), false, None);
+            let start = MenuItem::with_id(
+                &start_id,
+                lang_text(" ▶️   启  动", " ▶️  Start"),
+                true,
+                None,
+            );
+            let stop =
+                MenuItem::with_id(&stop_id, lang_text("⏹️  停  止", "⏹️  Stop"), false, None);
+            let restart = MenuItem::with_id(
+                &restart_id,
+                lang_text("🔁  重  启", "🔁  Restart"),
+                false,
+                None,
+            );
 
             sub.append(&start).unwrap();
             sub.append(&stop).unwrap();
@@ -623,7 +654,8 @@ async fn main() {
                     sub.append(&separator).unwrap();
                 }
                 let bb_id = format!("{}_open_uri_{}", index, si);
-                let mi = IconMenuItem::with_id(&bb_id, format!("↗️ {}", &ss.title), true, None, None);
+                let mi =
+                    IconMenuItem::with_id(&bb_id, format!("↗️ {}", &ss.title), true, None, None);
                 sub.append(&mi).unwrap();
 
                 let ss_arc = Arc::new(ss.clone());
@@ -637,13 +669,17 @@ async fn main() {
     // ===== Quit =====
     {
         let state_quit = state.clone();
-        let cv=cfg.clone();
-        actions.insert(EVENT_QUIT.to_string(), Box::new(move || {
-            cv.stop_all(&state_quit);
-        }));
+        let cv = cfg.clone();
+        actions.insert(
+            EVENT_QUIT.to_string(),
+            Box::new(move || {
+                cv.stop_all(&state_quit);
+            }),
+        );
 
         menu.append(&separator).unwrap();
-        let quit_item = MenuItem::with_id(EVENT_QUIT, lang_text("❌  退   出", "❌ Quit"), true, None);
+        let quit_item =
+            MenuItem::with_id(EVENT_QUIT, lang_text("❌  退   出", "❌ Quit"), true, None);
         menu.append(&quit_item).unwrap();
     }
 
@@ -704,7 +740,6 @@ fn load_cfg() -> anyhow::Result<AppConfig> {
 
     Ok(cfg.try_deserialize()?)
 }
-
 
 #[cfg(unix)]
 fn redirect_stderr(file: &std::fs::File) {
