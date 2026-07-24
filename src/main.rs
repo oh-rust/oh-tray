@@ -460,10 +460,10 @@ fn build_shell(cmd: &str) -> Command {
         c.arg(&vbs_path);
         c.as_std_mut().creation_flags(0x08000000);
 
-        tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-            let _ = std::fs::remove_file(vbs_path);
-        });
+        // tokio::spawn(async move {
+        //     tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        //     let _ = std::fs::remove_file(vbs_path); // 若文件已不存在了，windows 11 会弹出窗口，如何解决
+        // });
 
         c
     }
