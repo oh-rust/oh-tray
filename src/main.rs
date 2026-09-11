@@ -32,6 +32,7 @@ struct AppConfig {
     #[serde(default)]
     home: String,
 
+    /// 应用图标的地址
     #[serde(default)]
     icon: String,
 
@@ -47,6 +48,7 @@ struct AppConfig {
 struct AppItem {
     name: String,
 
+    /// 当前条目的根目录
     #[serde(default)]
     home: String,
 
@@ -71,6 +73,24 @@ struct AppItem {
 
     #[serde(default)]
     opens: Vec<AppOpenURI>,
+}
+
+// 将 c:/abc/def -> c:\\abc\def
+// 而 taskkill /F /IM tvcms.exe 中的 /F 和 /IM 的 "/" 则跳过
+fn normalize_path(path: &str) -> String {
+    let mut result = String::with_capacity(path.len());
+
+    for (i, c) in path.char_indices() {
+        if c == '/' && i > 0 && path.as_bytes()[i - 1] == b' ' {
+            result.push(c);
+        } else if c == '/' || c == '\\' {
+            result.push(std::path::MAIN_SEPARATOR);
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 fn default_true() -> bool {
@@ -98,11 +118,21 @@ impl AppOpenURI {
 }
 
 impl AppConfig {
+    fn get_home(&self) -> String {
+        normalize_path(&self.home)
+    }
+    fn get_icon(&self) -> String {
+        normalize_path(&self.icon)
+    }
+    fn get_log_prefix(&self) -> String {
+        normalize_path(&self.log_prefix)
+    }
+
     fn load_icon(&self) -> tray_icon::Icon {
         if self.icon.is_empty() {
             return load_icon();
         }
-        if let Ok(reader) = image::ImageReader::open(self.icon.as_str()) {
+        if let Ok(reader) = image::ImageReader::open(self.get_icon().as_str()) {
             if let Ok(img) = reader.decode() {
                 let rgba = img.to_rgba8(); // 转 RGBA
                 let (width, height) = rgba.dimensions();
@@ -122,11 +152,11 @@ impl AppConfig {
 
     fn setup(&self) {
         if !self.home.is_empty() {
-            std::env::set_current_dir(&self.home).unwrap();
+            std::env::set_current_dir(self.get_home()).unwrap();
         }
 
         if !self.log_prefix.is_empty() && self.log_prefix.ne("no") {
-            let filename = format!("{}_stderr.log", self.log_prefix);
+            let filename = format!("{}_stderr.log", self.get_log_prefix());
             match std::fs::File::create(&filename) {
                 Ok(file) => {
                     redirect_stderr(&file);
@@ -248,6 +278,13 @@ impl UiEntry {
 // use std::process::Stdio;
 
 impl AppItem {
+    fn get_home(&self) -> String {
+        normalize_path(&self.home)
+    }
+    fn get_start(&self) -> String {
+        normalize_path(&self.start)
+    }
+
     fn start(&self, state: &Arc<AppState>) {
         eprintln!("App.Start called");
         let item = self.clone();
@@ -270,10 +307,10 @@ impl AppItem {
             }
         }
 
-        let mut cmd = build_shell(&item.start);
+        let mut cmd = build_shell(item.get_start().as_str());
 
         if !item.home.is_empty() {
-            cmd.current_dir(&item.home);
+            cmd.current_dir(item.get_home());
         }
         match cmd.group_spawn() {
             Ok(child) => {
@@ -353,10 +390,11 @@ impl AppItem {
 
         // 先尝试使用自定义的 stop 命令停止应用
         if !item.stop.is_empty() {
-            let mut cmd = build_shell(&item.stop);
+            let p = normalize_path(&item.stop);
+            let mut cmd = build_shell(p.as_str());
 
             if !item.home.is_empty() {
-                cmd.current_dir(&item.home);
+                cmd.current_dir(item.get_home());
             }
             match cmd.group_spawn() {
                 Ok(mut child) => {
