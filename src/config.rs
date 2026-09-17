@@ -1,0 +1,184 @@
+//! 配置加载与配置数据结构。
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use clap::Parser;
+use serde::{Deserialize, Serialize};
+
+use crate::icon::{load_default, load_from_path};
+use crate::state::AppState;
+use crate::util::{default_true, normalize_path, redirect_stderr};
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[arg(short, long, default_value = "conf/tray.yml")]
+    pub config: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppConfig {
+    #[serde(default)]
+    pub title: String,
+
+    /// tray 的根目录，默认为空
+    /// 若不为空，则启动应用后先切换到此目录下
+    #[serde(default)]
+    pub home: String,
+
+    /// 应用图标的地址
+    #[serde(default)]
+    pub icon: String,
+
+    /// 日志文件地址前缀，默认为当前
+    #[serde(default)]
+    pub log_prefix: String,
+
+    #[serde(default)]
+    pub groups: Vec<AppItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppItem {
+    pub name: String,
+
+    /// 当前条目的根目录
+    #[serde(default)]
+    pub home: String,
+
+    pub start: String,
+
+    #[serde(default)]
+    pub stop: String,
+
+    // #[serde(default)]
+    // restart: String,
+
+    #[serde(default = "default_true")]
+    pub auto_start: bool,
+
+    #[serde(default)]
+    pub address: String, // 浏览器访问地址
+
+    #[serde(default)]
+    pub auto_open: bool, // 是否自动在浏览器打开
+
+    #[serde(skip_deserializing, default = "crate::util::next_runtime_id")]
+    pub uniq_id: usize,
+
+    #[serde(default)]
+    pub opens: Vec<AppOpenURI>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppOpenURI {
+    pub title: String,
+    pub uri: String,
+}
+
+impl AppOpenURI {
+    pub fn open(&self) {
+        eprintln!("{} open browser {} ...", &self.title, &self.uri);
+        if let Err(e) = webbrowser::open(&self.uri) {
+            eprintln!("Failed to open browser for {}: {:?}", self.uri, e);
+        }
+    }
+}
+
+impl AppConfig {
+    pub fn get_home(&self) -> String {
+        normalize_path(&self.home)
+    }
+    pub fn get_icon(&self) -> String {
+        normalize_path(&self.icon)
+    }
+    pub fn get_log_prefix(&self) -> String {
+        normalize_path(&self.log_prefix)
+    }
+
+    pub fn load_icon(&self) -> tray_icon::Icon {
+        if self.icon.is_empty() {
+            return load_default();
+        }
+        load_from_path(&self.get_icon())
+    }
+
+    pub fn setup(&self) {
+        if !self.home.is_empty() {
+            std::env::set_current_dir(self.get_home()).unwrap();
+        }
+
+        if !self.log_prefix.is_empty() && self.log_prefix.ne("no") {
+            let filename = format!("{}_stderr.log", self.get_log_prefix());
+            match std::fs::File::create(&filename) {
+                Ok(file) => {
+                    redirect_stderr(&file);
+
+                    // 避免 file 被 drop
+                    std::mem::forget(file);
+                }
+                Err(e) => {
+                    eprintln!("create log file {}: {}", filename, e);
+                }
+            }
+        }
+    }
+
+    pub fn auto_start_all(&self, state: &Arc<AppState>) {
+        for item in &self.groups {
+            if item.auto_start {
+                item.restart(state);
+
+                if item.auto_open {
+                    item.open_browser(state);
+                }
+            } else {
+                // 确保服务类的进程，在 tray 启动的时候，是停止状态
+                // 如用 docker compose 启动的进程，在关机后，下次会自动启动
+                item.stop(state);
+            }
+        }
+    }
+
+    pub fn stop_all(&self, state: &Arc<AppState>) {
+        eprintln!("stopping all apps ...");
+        let groups = self.groups.clone();
+        let state = state.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        tokio::spawn(async move {
+            let futures = groups.iter().map(|child| {
+                let child = child.clone();
+                let cs = state.clone();
+                async move {
+                    child.a_stop(&cs).await;
+                }
+            });
+            eprintln!("async {} futures", futures.len());
+            futures::future::join_all(futures).await;
+            let _ = tx.send(());
+        });
+        let _ = rx.recv();
+        eprintln!("stopped all apps finished");
+    }
+}
+
+impl AppItem {
+    pub fn get_home(&self) -> String {
+        normalize_path(&self.home)
+    }
+    pub fn get_start(&self) -> String {
+        normalize_path(&self.start)
+    }
+}
+
+/// 从命令行指定的配置文件加载并反序列化 `AppConfig`。
+pub fn load_cfg() -> Result<AppConfig> {
+    let args = Args::parse();
+
+    let cfg = config::Config::builder()
+        .add_source(config::File::with_name(&args.config))
+        .build()?;
+
+    Ok(cfg.try_deserialize()?)
+}

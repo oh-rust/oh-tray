@@ -1,9 +1,10 @@
 title: "应用标题"
-icon: "icons/icon.png"  # 可选，自定义托盘图标
+#icon: "icons/icon.png"  # 可选，自定义托盘图标
+#home: "D:/soft/my/" # 可选，运行的更目录，若不为空，tray 启动后会先进入此目录
 #log_prefix: "log/tray" # 日志文件前缀，需要目录已经存在，不为空时有效
 groups:
   - name: "aimux"  # 显示子菜单item
-    home: "D:/soft/my/aimux"  # 此子组程序的工作目录，可选，默认为空。后续 Icon、Start、Stop、Restart 命令均相对于此目录。
+    home: "aimux"  # 此子组程序的工作目录，可选，默认为空。后续 Icon、Start、Stop、Restart 命令均相对于此目录。
     start: "./bin/aimux.exe"  # 显示子菜单item:Start，当此进程已启动后，是正常运行则设置为不可用。若进程退出则设置为可用
     stop: "taskkill /F /IM aimux.exe"  # 显示子菜单 item:Stop，当此进程未启动，设置为不可用，若进程运行中则设置为可用。
     auto_start: true  # 启动进程时是否自动启动该子组，不需要显示为菜单，此配置项可选，默认为 true
