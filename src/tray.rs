@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tray_icon::{
-    menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     TrayIcon, TrayIconBuilder,
+    menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
 };
 
 use crate::config::AppConfig;

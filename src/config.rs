@@ -38,30 +38,34 @@ pub struct AppConfig {
     pub groups: Vec<AppItem>,
 }
 
+/// 一个应用，也是一条菜单的配置信息
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppItem {
+    /// 标题
     pub name: String,
 
-    /// 当前条目的根目录
+    /// 当前条目的根目录，启动 tray 后,启动此 app 时，使用此为 HOME 目录
     #[serde(default)]
     pub home: String,
 
+    /// 启动命令，必填，如 “./bin/aimux.exe”，“docker compose up”
     pub start: String,
 
+    /// 停止命令，可选
     #[serde(default)]
     pub stop: String,
 
-    // #[serde(default)]
-    // restart: String,
-
+    /// 是否自动启动
     #[serde(default = "default_true")]
     pub auto_start: bool,
 
+    /// 浏览器访问地址
     #[serde(default)]
-    pub address: String, // 浏览器访问地址
+    pub address: String,
 
+    /// 是否自动在浏览器打开
     #[serde(default)]
-    pub auto_open: bool, // 是否自动在浏览器打开
+    pub auto_open: bool,
 
     #[serde(skip_deserializing, default = "crate::util::next_runtime_id")]
     pub uniq_id: usize,

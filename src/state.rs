@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use command_group::AsyncGroupChild;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 pub struct AppState {
     /// 运行中子进程集合，键为 `AppItem::uniq_id`。

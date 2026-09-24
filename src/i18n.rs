@@ -16,9 +16,5 @@ pub fn is_zh() -> bool {
 
 /// 根据当前语言返回中文或英文文案。
 pub fn lang_text<'a>(zh: &'a str, en: &'a str) -> &'a str {
-    if is_zh() {
-        zh
-    } else {
-        en
-    }
+    if is_zh() { zh } else { en }
 }

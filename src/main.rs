@@ -13,12 +13,12 @@ use std::sync::Arc;
 
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tray_icon::menu::MenuEvent;
 
 use crate::config::load_cfg;
 use crate::state::AppState;
-use crate::tray::{build_tray, EVENT_QUIT};
+use crate::tray::{EVENT_QUIT, build_tray};
 
 #[tokio::main]
 async fn main() {
