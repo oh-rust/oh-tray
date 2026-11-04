@@ -59,6 +59,18 @@ pub struct AppItem {
     #[serde(default = "default_true")]
     pub auto_start: bool,
 
+    /// 是否隐藏菜单项目
+    #[serde(default)]
+    pub hidden: bool,
+
+    /// tray 启动时执行的命令列表
+    #[serde(default)]
+    pub startup_commands: Vec<String>,
+
+    /// tray 启动时需要删除的文件列表
+    #[serde(default)]
+    pub startup_cleanup: Vec<String>,
+
     /// 浏览器访问地址
     #[serde(default)]
     pub address: String,
@@ -132,7 +144,7 @@ impl AppConfig {
         for item in &self.groups {
             if item.auto_start {
                 item.restart(state);
-
+                let _ = state.tx.send((item.uniq_id, true));
                 if item.auto_open {
                     item.open_browser(state);
                 }

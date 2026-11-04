@@ -66,6 +66,9 @@ pub fn build_tray(cfg: &AppConfig, state: &Arc<AppState>) -> TrayUi {
     }
 
     for (index, item) in cfg.groups.iter().enumerate() {
+        if item.hidden {
+            continue;
+        }
         // menu.append(&separator).unwrap();
 
         let sub = Submenu::new(&item.name, true);
@@ -144,7 +147,7 @@ pub fn build_tray(cfg: &AppConfig, state: &Arc<AppState>) -> TrayUi {
                     title: TitleMenu::Submenu(sub.clone()),
                     // open: open_browser,
                 };
-                ui.set_running(false);
+                ui.set_running(item.auto_start);
                 ui_map.insert(item.uniq_id, ui);
             }
         }

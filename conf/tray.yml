@@ -25,3 +25,8 @@ groups:
     start: "启动命令"
     stop: "停止命令"
     auto_start: false  # 启动进程时是否自动启动该子组
+#    hidden: false  # 隐藏菜单
+#    startup_commands:
+#      - "rm -rf a.log"
+#    startup_cleanup:
+#      - "log/error.log"

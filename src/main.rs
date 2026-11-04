@@ -10,7 +10,6 @@ mod util;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tokio::sync::{Mutex, mpsc};
@@ -32,22 +31,34 @@ async fn main() {
     let state = Arc::new(AppState {
         procs: Mutex::new(HashMap::new()),
         tx,
+        event_loop_proxy: event_loop.create_proxy(),
     });
 
     // 构建托盘图标与菜单；tray 字段必须保持存活
     let mut tray_ui = build_tray(&cfg, &state);
 
     // auto start
-    cfg.auto_start_all(&state);
+    // cfg.auto_start_all(&state);
+
+    {
+        let cfg1 = cfg.clone();
+        let state1 = state.clone();
+        tokio::task::spawn_blocking(move || {
+            cfg1.auto_start_all(&state1);
+        });
+    }
 
     let state_destroy = state.clone();
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::LoopDestroyed => {
-                eprintln!("Event::LoopDestroyed -> tray exiting");
+                eprintln!("receive Event::LoopDestroyed -> tray exiting");
                 cfg.stop_all(&state_destroy);
-                // 添加一个 sleep ？
+            }
+            Event::UserEvent(()) => {
+                // EventLoopProxy 唤醒事件循环
+                eprintln!(" receive Event::UserEvent");
             }
             Event::MainEventsCleared => {
                 while let Ok((id, running)) = rx.try_recv() {

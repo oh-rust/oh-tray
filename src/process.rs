@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use command_group::AsyncCommandGroup;
+use std::fs;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -34,6 +35,8 @@ impl AppItem {
             }
         }
 
+        item.startup(&state.clone());
+
         let mut cmd = build_shell(item.get_start().as_str());
 
         if !item.home.is_empty() {
@@ -51,8 +54,8 @@ impl AppItem {
                 let child = Arc::new(Mutex::new(child));
 
                 state.procs.lock().await.insert(item.uniq_id, child.clone());
-                let ret = state.tx.send((item.uniq_id, true));
-                eprintln!("[app.a_start] tx.send running: {:?}", ret);
+
+                state.send_tx(item.uniq_id, true, "app.a_start begin");
 
                 let state_monitor = state.clone();
                 let item_monitor = item.clone();
@@ -75,6 +78,12 @@ impl AppItem {
                             }
                         };
 
+                        state_monitor.send_tx(
+                            item_monitor.uniq_id,
+                            !exited,
+                            "app.a_start [watch-loop]",
+                        );
+
                         if exited {
                             break;
                         }
@@ -87,8 +96,11 @@ impl AppItem {
                         .await
                         .remove(&item_monitor.uniq_id);
 
-                    let ret = state_monitor.tx.send((item_monitor.uniq_id, false));
-                    eprintln!("[app.a_start] [watch] tx.send stop {:?}", ret);
+                    state_monitor.send_tx(
+                        item_monitor.uniq_id,
+                        false,
+                        "app.a_start loop-end send-stop",
+                    );
                 });
             }
             Err(e) => {
@@ -158,8 +170,7 @@ impl AppItem {
             eprintln!("[app.a_stop] process not found");
         }
 
-        let ret = state.tx.send((item.uniq_id, false));
-        eprintln!("[app.a_stop]tx.send stop {:?}", ret);
+        state.send_tx(item.uniq_id, false, "app.a_stop");
     }
 
     pub fn restart(&self, state: &Arc<AppState>) {
@@ -180,6 +191,23 @@ impl AppItem {
         if let Err(e) = webbrowser::open(&self.address) {
             eprintln!("Failed to open browser for {}: {:?}", self.address, e);
         }
+    }
+
+    fn startup(&self, _state: &Arc<AppState>) {
+        eprintln!("{} startup ...", &self.name);
+        let startup_commands = self.startup_commands.clone();
+        let item = self.clone();
+        tokio::spawn(async move {
+            for command in &startup_commands {
+                execute_command(item.clone(), command).await;
+            }
+        });
+
+        for p in &self.startup_cleanup {
+            remove_path(self.clone(), p);
+        }
+
+        eprintln!("{} startup done", &self.name);
     }
 }
 
@@ -216,5 +244,74 @@ fn build_shell(cmd: &str) -> Command {
         let mut c = Command::new("sh");
         c.args(["-c", cmd]);
         c
+    }
+}
+
+/// Execute a startup command.
+async fn execute_command(item: AppItem, command: &str) {
+    let command = command.trim();
+
+    if command.is_empty() {
+        return;
+    }
+    let mut c = build_shell(command);
+    if !item.home.is_empty() {
+        c.current_dir(item.get_home());
+    }
+
+    let output = build_shell(command).output().await;
+    match output {
+        Ok(output) => {
+            if output.status.success() {
+                println!("[STARTUP] Command executed: {}", command);
+            } else {
+                eprintln!("[STARTUP] Command failed ({}): {}", output.status, command);
+
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.trim().is_empty() {
+                    eprintln!("{}", stderr.trim());
+                }
+            }
+        }
+        Err(err) => {
+            eprintln!("[STARTUP] Failed to execute command '{}': {}", command, err);
+        }
+    }
+}
+
+/// Remove a file or directory.
+fn remove_path(item: AppItem, path: &str) {
+    let mut path = std::path::PathBuf::from(normalize_path(path));
+
+    if path.is_relative() && !item.home.is_empty() {
+        path = std::path::Path::new(&item.home).join(path);
+    }
+
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            let result = if metadata.file_type().is_symlink() || metadata.is_file() {
+                fs::remove_file(&path)
+            } else if metadata.is_dir() {
+                fs::remove_dir_all(&path)
+            } else {
+                eprintln!("[CLEANUP] Unsupported file type: {}", path.display());
+                return;
+            };
+
+            match result {
+                Ok(()) => {
+                    println!("[CLEANUP] Removed: {}", path.display());
+                }
+                Err(err) => {
+                    eprintln!("[CLEANUP] Failed to remove '{}': {}", path.display(), err);
+                }
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            println!("[CLEANUP] Not found: {}", path.display());
+        }
+        Err(err) => {
+            eprintln!("[CLEANUP] Failed to access '{}': {}", path.display(), err);
+        }
     }
 }
