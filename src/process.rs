@@ -13,14 +13,33 @@ use crate::util::{next_runtime_id, normalize_path};
 
 impl AppItem {
     /// 异步启动的同步包装，转发到 tokio 运行时执行。
-    pub fn start(&self, state: &Arc<AppState>) {
+    pub fn menu_start(&self, state: &Arc<AppState>) {
         eprintln!("App.Start called");
         let item = self.clone();
         let state = state.clone();
 
         tokio::spawn(async move {
+            state.stopped.lock().await.remove(&item.uniq_id);
             item.a_start(&state).await;
+            item.keep_alive(&state).await;
         });
+    }
+
+    async fn keep_alive(&self, state: &Arc<AppState>) {
+        if !self.keep_alive {
+            return;
+        }
+        if state.stopped.lock().await.contains_key(&self.uniq_id) {
+            return;
+        }
+        loop {
+            let start = tokio::time::Instant::now();
+            self.a_start(state).await;
+            let cost = start.elapsed().as_secs();
+            if cost < 1 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
     }
 
     pub async fn a_start(&self, state: &Arc<AppState>) {
@@ -34,14 +53,16 @@ impl AppItem {
                 return;
             }
         }
-
-        item.startup(&state.clone());
+        self.startup_once.call_once(|| {
+            item.startup(&state.clone());
+        });
 
         let mut cmd = build_shell(item.get_start().as_str());
 
         if !item.home.is_empty() {
             cmd.current_dir(item.get_home());
         }
+
         match cmd.group_spawn() {
             Ok(child) => {
                 eprintln!(
@@ -61,64 +82,55 @@ impl AppItem {
                 let item_monitor = item.clone();
                 let name = item_monitor.name.clone();
 
+                let start_time = tokio::time::Instant::now();
+
                 tokio::spawn(async move {
                     loop {
                         let exited = {
                             let mut c = child.lock().await;
                             match c.try_wait() {
                                 Ok(Some(status)) => {
-                                    eprintln!(
-                                        "[app.a_start] process [{}] exited with status {}",
-                                        &name, status
-                                    );
+                                    eprintln!("[app.a_start] process [{}] exited with status {}", &name, status);
                                     true
                                 }
-                                Ok(None) => false,
+                                Ok(None) => {
+                                    if item.max_lifetime > 0 && start_time.elapsed().as_secs() > item.max_lifetime {
+                                        let _ = c.kill();
+                                    }
+                                    false
+                                }
                                 Err(_) => true, // 出错也当作退出
                             }
                         };
 
-                        state_monitor.send_tx(
-                            item_monitor.uniq_id,
-                            !exited,
-                            "app.a_start [watch-loop]",
-                        );
+                        state_monitor.send_tx(item_monitor.uniq_id, !exited, "app.a_start [watch-loop]");
 
                         if exited {
                             break;
                         }
+
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     }
 
-                    state_monitor
-                        .procs
-                        .lock()
-                        .await
-                        .remove(&item_monitor.uniq_id);
+                    state_monitor.procs.lock().await.remove(&item_monitor.uniq_id);
 
-                    state_monitor.send_tx(
-                        item_monitor.uniq_id,
-                        false,
-                        "app.a_start loop-end send-stop",
-                    );
+                    state_monitor.send_tx(item_monitor.uniq_id, false, "app.a_start loop-end send-stop");
                 });
             }
             Err(e) => {
-                eprintln!(
-                    "[app.a_start] start process [{}] failed: {:?}",
-                    item.name, e
-                );
+                eprintln!("[app.a_start] start process [{}] failed: {:?}", item.name, e);
             }
         }
     }
 
     /// 异步停止的同步包装，转发到 tokio 运行时执行。
-    pub fn stop(&self, state: &Arc<AppState>) {
+    pub fn menu_stop(&self, state: &Arc<AppState>) {
         eprintln!("App.Stop called");
         let item = self.clone();
         let state = state.clone();
 
         tokio::spawn(async move {
+            state.stopped.lock().await.insert(item.uniq_id, true);
             item.a_stop(&state).await;
         });
     }
@@ -139,16 +151,10 @@ impl AppItem {
             match cmd.group_spawn() {
                 Ok(mut child) => {
                     let ret = child.wait().await;
-                    eprintln!(
-                        "[app.a_stop] {} execute stop command success, status={:?}",
-                        &item.name, ret
-                    );
+                    eprintln!("[app.a_stop] {} execute stop command success, status={:?}", &item.name, ret);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[app.a_stop] {} execute stop command failed:{:?}",
-                        &item.name, e
-                    );
+                    eprintln!("[app.a_stop] {} execute stop command failed:{:?}", &item.name, e);
                 }
             }
         }
@@ -162,10 +168,7 @@ impl AppItem {
             let pid = c.id().unwrap_or(0);
             let ret1 = c.kill().await;
             let ret2 = c.wait().await;
-            eprintln!(
-                "[app.a_stop] stop process {}, kill={:?}, wait={:?}",
-                pid, ret1, ret2
-            );
+            eprintln!("[app.a_stop] stop process {}, kill={:?}, wait={:?}", pid, ret1, ret2);
         } else {
             eprintln!("[app.a_stop] process not found");
         }
@@ -173,15 +176,17 @@ impl AppItem {
         state.send_tx(item.uniq_id, false, "app.a_stop");
     }
 
-    pub fn restart(&self, state: &Arc<AppState>) {
+    pub fn menu_restart(&self, state: &Arc<AppState>) {
         eprintln!("App.Restart called");
         let item = self.clone();
         let state = state.clone();
         tokio::spawn(async move {
             eprintln!("restart >>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+            state.stopped.lock().await.remove(&item.uniq_id);
             item.a_stop(&state).await;
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             item.a_start(&state).await;
+            item.keep_alive(&state).await;
             eprintln!("restart <<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
         });
     }

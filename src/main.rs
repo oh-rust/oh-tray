@@ -32,13 +32,11 @@ async fn main() {
         procs: Mutex::new(HashMap::new()),
         tx,
         event_loop_proxy: event_loop.create_proxy(),
+        stopped: Mutex::new(HashMap::new()),
     });
 
     // 构建托盘图标与菜单；tray 字段必须保持存活
     let mut tray_ui = build_tray(&cfg, &state);
-
-    // auto start
-    // cfg.auto_start_all(&state);
 
     {
         let cfg1 = cfg.clone();

@@ -1,6 +1,6 @@
 //! 配置加载与配置数据结构。
 
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use anyhow::Result;
 use clap::Parser;
@@ -51,6 +51,17 @@ pub struct AppItem {
     /// 启动命令，必填，如 “./bin/aimux.exe”，“docker compose up”
     pub start: String,
 
+    #[serde(skip, default = "default_startup_once")]
+    pub startup_once: Arc<Once>,
+
+    /// tray 启动前执行的命令列表
+    #[serde(default)]
+    pub startup_commands: Vec<String>,
+
+    /// tray 启动时需要删除的文件列表
+    #[serde(default)]
+    pub startup_cleanup: Vec<String>,
+
     /// 停止命令，可选
     #[serde(default)]
     pub stop: String,
@@ -63,14 +74,6 @@ pub struct AppItem {
     #[serde(default)]
     pub hidden: bool,
 
-    /// tray 启动时执行的命令列表
-    #[serde(default)]
-    pub startup_commands: Vec<String>,
-
-    /// tray 启动时需要删除的文件列表
-    #[serde(default)]
-    pub startup_cleanup: Vec<String>,
-
     /// 浏览器访问地址
     #[serde(default)]
     pub address: String,
@@ -79,11 +82,23 @@ pub struct AppItem {
     #[serde(default)]
     pub auto_open: bool,
 
+    /// 是否启用进程保活，进程退出后自动重启
+    #[serde(default)]
+    pub keep_alive: bool,
+
+    /// 最大存活时长（秒），0 表示不限制
+    #[serde(default)]
+    pub max_lifetime: u64,
+
     #[serde(skip_deserializing, default = "crate::util::next_runtime_id")]
     pub uniq_id: usize,
 
     #[serde(default)]
     pub opens: Vec<AppOpenURI>,
+}
+
+fn default_startup_once() -> Arc<Once> {
+    Arc::new(Once::new())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -143,7 +158,7 @@ impl AppConfig {
     pub fn auto_start_all(&self, state: &Arc<AppState>) {
         for item in &self.groups {
             if item.auto_start {
-                item.restart(state);
+                item.menu_restart(state);
                 let _ = state.tx.send((item.uniq_id, true));
                 if item.auto_open {
                     item.open_browser(state);
@@ -151,7 +166,7 @@ impl AppConfig {
             } else {
                 // 确保服务类的进程，在 tray 启动的时候，是停止状态
                 // 如用 docker compose 启动的进程，在关机后，下次会自动启动
-                item.stop(state);
+                item.menu_stop(state);
             }
         }
     }
@@ -192,9 +207,7 @@ impl AppItem {
 pub fn load_cfg() -> Result<AppConfig> {
     let args = Args::parse();
 
-    let cfg = config::Config::builder()
-        .add_source(config::File::with_name(&args.config))
-        .build()?;
+    let cfg = config::Config::builder().add_source(config::File::with_name(&args.config)).build()?;
 
     Ok(cfg.try_deserialize()?)
 }

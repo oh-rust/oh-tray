@@ -26,20 +26,14 @@ pub fn circle_rgba(r: u8, g: u8, b: u8) -> Vec<u8> {
 
 /// 根据运行状态返回菜单项前缀图标（绿色=运行，红色=停止）。
 pub fn get_menu_icon(running: bool) -> tray_icon::menu::Icon {
-    let rgba = if running {
-        circle_rgba(0, 200, 0)
-    } else {
-        circle_rgba(200, 0, 0)
-    };
+    let rgba = if running { circle_rgba(0, 200, 0) } else { circle_rgba(200, 0, 0) };
 
     tray_icon::menu::Icon::from_rgba(rgba, 32, 32).unwrap()
 }
 
 /// 加载内嵌的默认托盘图标。
 pub fn load_default() -> Icon {
-    let img = image::load_from_memory(include_bytes!("../icons/tray.png"))
-        .unwrap()
-        .into_rgba8();
+    let img = image::load_from_memory(include_bytes!("../icons/tray.png")).unwrap().into_rgba8();
 
     let (w, h) = img.dimensions();
     Icon::from_rgba(img.into_raw(), w, h).unwrap()

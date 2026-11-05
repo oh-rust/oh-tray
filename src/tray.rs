@@ -84,12 +84,7 @@ pub fn build_tray(cfg: &AppConfig, state: &Arc<AppState>) -> TrayUi {
             let open_id = format!("{}_browser", index);
             if !item.address.is_empty() {
                 {
-                    let mi = MenuItem::with_id(
-                        &open_id,
-                        lang_text("🌐  打  开", "🌐  Open"),
-                        true,
-                        None,
-                    );
+                    let mi = MenuItem::with_id(&open_id, lang_text("🌐  打  开", "🌐  Open"), true, None);
                     sub.append(&mi).unwrap();
                     // open_browser = Some(mi.clone());
                 }
@@ -108,20 +103,9 @@ pub fn build_tray(cfg: &AppConfig, state: &Arc<AppState>) -> TrayUi {
             let stop_id = format!("{}_stop", index);
             let restart_id = format!("{}_restart", index);
 
-            let start = MenuItem::with_id(
-                &start_id,
-                lang_text(" ▶️   启  动", " ▶️  Start"),
-                true,
-                None,
-            );
-            let stop =
-                MenuItem::with_id(&stop_id, lang_text("⏹️  停  止", "⏹️  Stop"), false, None);
-            let restart = MenuItem::with_id(
-                &restart_id,
-                lang_text("🔁  重  启", "🔁  Restart"),
-                false,
-                None,
-            );
+            let start = MenuItem::with_id(&start_id, lang_text(" ▶️   启  动", " ▶️  Start"), true, None);
+            let stop = MenuItem::with_id(&stop_id, lang_text("⏹️  停  止", "⏹️  Stop"), false, None);
+            let restart = MenuItem::with_id(&restart_id, lang_text("🔁  重  启", "🔁  Restart"), false, None);
 
             sub.append(&start).unwrap();
             sub.append(&stop).unwrap();
@@ -129,15 +113,15 @@ pub fn build_tray(cfg: &AppConfig, state: &Arc<AppState>) -> TrayUi {
 
             let item_arc = Arc::new(item.clone());
             let s = state.clone();
-            actions.insert(start_id, Box::new(move || item_arc.start(&s)));
+            actions.insert(start_id, Box::new(move || item_arc.menu_start(&s)));
 
             let item_arc = Arc::new(item.clone());
             let s = state.clone();
-            actions.insert(stop_id, Box::new(move || item_arc.stop(&s)));
+            actions.insert(stop_id, Box::new(move || item_arc.menu_stop(&s)));
 
             let item_arc = Arc::new(item.clone());
             let s = state.clone();
-            actions.insert(restart_id, Box::new(move || item_arc.restart(&s)));
+            actions.insert(restart_id, Box::new(move || item_arc.menu_restart(&s)));
 
             {
                 let ui = UiEntry {
@@ -158,8 +142,7 @@ pub fn build_tray(cfg: &AppConfig, state: &Arc<AppState>) -> TrayUi {
                     sub.append(&separator).unwrap();
                 }
                 let bb_id = format!("{}_open_uri_{}", index, si);
-                let mi =
-                    IconMenuItem::with_id(&bb_id, format!("↗️ {}", &ss.title), true, None, None);
+                let mi = IconMenuItem::with_id(&bb_id, format!("↗️ {}", &ss.title), true, None, None);
                 sub.append(&mi).unwrap();
 
                 let ss_arc = Arc::new(ss.clone());
@@ -182,8 +165,7 @@ pub fn build_tray(cfg: &AppConfig, state: &Arc<AppState>) -> TrayUi {
         );
 
         menu.append(&separator).unwrap();
-        let quit_item =
-            MenuItem::with_id(EVENT_QUIT, lang_text("❌  退   出", "❌ Quit"), true, None);
+        let quit_item = MenuItem::with_id(EVENT_QUIT, lang_text("❌  退   出", "❌ Quit"), true, None);
         menu.append(&quit_item).unwrap();
     }
 
@@ -194,9 +176,5 @@ pub fn build_tray(cfg: &AppConfig, state: &Arc<AppState>) -> TrayUi {
         .build()
         .unwrap();
 
-    TrayUi {
-        tray,
-        actions,
-        ui_map,
-    }
+    TrayUi { tray, actions, ui_map }
 }

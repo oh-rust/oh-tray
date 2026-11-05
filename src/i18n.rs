@@ -7,10 +7,7 @@ static IS_ZH: OnceLock<bool> = OnceLock::new();
 /// 当前系统语言是否为中文（以 `zh` 开头视为中文）。
 pub fn is_zh() -> bool {
     *IS_ZH.get_or_init(|| {
-        sys_locale::get_locale()
-            .unwrap_or_else(|| "en-US".to_string())
-            .to_lowercase()
-            .starts_with("zh")
+        sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string()).to_lowercase().starts_with("zh")
     })
 }
 

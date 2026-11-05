@@ -10,6 +10,8 @@ groups:
     auto_start: true  # 启动进程时是否自动启动该子组，不需要显示为菜单，此配置项可选，默认为 true
     address: "http://127.0.0.1:9001/admin/"  # 本地 Web 访问地址，有值时显示子菜单 item:OpenBrowser，此配置项可选，默认为空
     auto_open: true    # 是否自动在浏览器打开，可选，默认为 false
+#    keep_alive: false # 是否保活，进程退出后自动启动，可选，默认为 false
+#    max_lifetime: 1800 # 进程最大存活时间，可选，单位 秒
 
   - name: "子组应用名称2"
     home: "/home/work/app2/"
