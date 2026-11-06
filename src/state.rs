@@ -23,10 +23,10 @@ pub struct AppState {
 impl AppState {
     pub fn send_tx(&self, id: usize, running: bool, msg: &str) {
         let ret = self.tx.send((id, running));
-        eprintln!("[app] [sendTx] {:?} ({:?},{:?}) --> {:?}", msg, id, running, ret);
+        crate::log!("[app] [sendTx] {:?} ({:?},{:?}) --> {:?}", msg, id, running, ret);
         if ret.is_ok() {
             let r2 = self.event_loop_proxy.send_event(());
-            eprintln!("[event_loop_proxy] {:?} ({:?},{:?}) --> {:?}", msg, id, running, r2);
+            crate::log!("[event_loop_proxy] {:?} ({:?},{:?}) --> {:?}", msg, id, running, r2);
         }
     }
 }

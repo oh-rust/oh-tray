@@ -109,9 +109,9 @@ pub struct AppOpenURI {
 
 impl AppOpenURI {
     pub fn open(&self) {
-        eprintln!("{} open browser {} ...", &self.title, &self.uri);
+        crate::log!("{} open browser {} ...", &self.title, &self.uri);
         if let Err(e) = webbrowser::open(&self.uri) {
-            eprintln!("Failed to open browser for {}: {:?}", self.uri, e);
+            crate::log!("Failed to open browser for {}: {:?}", self.uri, e);
         }
     }
 }
@@ -149,7 +149,7 @@ impl AppConfig {
                     std::mem::forget(file);
                 }
                 Err(e) => {
-                    eprintln!("create log file {}: {}", filename, e);
+                    crate::log!("create log file {}: {}", filename, e);
                 }
             }
         }
@@ -172,7 +172,7 @@ impl AppConfig {
     }
 
     pub fn stop_all(&self, state: &Arc<AppState>) {
-        eprintln!("stopping all apps ...");
+        crate::log!("stopping all apps ...");
         let groups = self.groups.clone();
         let state = state.clone();
 
@@ -185,12 +185,12 @@ impl AppConfig {
                     child.a_stop(&cs).await;
                 }
             });
-            eprintln!("async {} futures", futures.len());
+            crate::log!("async {} futures", futures.len());
             futures::future::join_all(futures).await;
             let _ = tx.send(());
         });
         let _ = rx.recv();
-        eprintln!("stopped all apps finished");
+        crate::log!("stopped all apps finished");
     }
 }
 

@@ -50,3 +50,19 @@ pub fn redirect_stderr(file: &std::fs::File) {
         );
     }
 }
+
+pub fn log_prefix() -> String {
+    let tm = format!("[{}]", chrono::Local::now().format("%H:%M:%S"));
+    format!("{} {}", "[oh-tray]", tm)
+}
+
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => {
+        eprintln!(
+            "{} {}",
+            $crate::util::log_prefix(),
+            format_args!($($arg)*)
+        )
+    };
+}

@@ -23,6 +23,7 @@ use crate::tray::{EVENT_QUIT, build_tray};
 async fn main() {
     let cfg = load_cfg().unwrap();
     cfg.setup();
+    log!("-------------------boot-----------------------");
 
     let event_loop = EventLoopBuilder::new().build();
 
@@ -51,16 +52,16 @@ async fn main() {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::LoopDestroyed => {
-                eprintln!("receive Event::LoopDestroyed -> tray exiting");
+                log!("receive Event::LoopDestroyed -> tray exiting");
                 cfg.stop_all(&state_destroy);
             }
             Event::UserEvent(()) => {
                 // EventLoopProxy 唤醒事件循环
-                eprintln!(" receive Event::UserEvent");
+                log!(" receive Event::UserEvent");
             }
             Event::MainEventsCleared => {
                 while let Ok((id, running)) = rx.try_recv() {
-                    eprintln!("receive tx ({},{})", id, running);
+                    log!("receive tx ({},{})", id, running);
                     if let Some(ui) = tray_ui.ui_map.get_mut(&id) {
                         ui.set_running(running);
                     }
@@ -68,14 +69,15 @@ async fn main() {
 
                 if let Ok(event) = MenuEvent::receiver().try_recv() {
                     let eid = event.id.0.as_str();
-                    eprintln!("receive event {:?} , eid={})", event, eid);
+                    log!("receive event {:?} , eid={})", event, eid);
                     if let Some(action) = tray_ui.actions.get_mut(eid) {
-                        eprintln!("action executed");
+                        log!("action executed");
                         action();
                     }
 
                     if eid == EVENT_QUIT {
                         *control_flow = ControlFlow::Exit;
+                        log!("event EVENT_QUIT");
                         return;
                     }
                 }

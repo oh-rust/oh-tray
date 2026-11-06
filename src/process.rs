@@ -14,7 +14,7 @@ use crate::util::{next_runtime_id, normalize_path};
 impl AppItem {
     /// 异步启动的同步包装，转发到 tokio 运行时执行。
     pub fn menu_start(&self, state: &Arc<AppState>) {
-        eprintln!("App.Start called");
+        crate::log!("App.Start called");
         let item = self.clone();
         let state = state.clone();
 
@@ -43,13 +43,13 @@ impl AppItem {
     }
 
     pub async fn a_start(&self, state: &Arc<AppState>) {
-        eprintln!("async App.Start called");
+        crate::log!("async App.Start called");
         let item = self.clone();
         let state = state.clone();
         {
             let procs = state.procs.lock().await;
             if procs.contains_key(&item.uniq_id) {
-                eprintln!("[app.a_start] process already running");
+                crate::log!("[app.a_start] process already running");
                 return;
             }
         }
@@ -65,7 +65,7 @@ impl AppItem {
 
         match cmd.group_spawn() {
             Ok(child) => {
-                eprintln!(
+                crate::log!(
                     "[app.a_start] start process [{}] ({}) success, pid={}",
                     item.name,
                     item.start,
@@ -90,7 +90,7 @@ impl AppItem {
                             let mut c = child.lock().await;
                             match c.try_wait() {
                                 Ok(Some(status)) => {
-                                    eprintln!("[app.a_start] process [{}] exited with status {}", &name, status);
+                                    crate::log!("[app.a_start] process [{}] exited with status {}", &name, status);
                                     true
                                 }
                                 Ok(None) => {
@@ -118,14 +118,14 @@ impl AppItem {
                 });
             }
             Err(e) => {
-                eprintln!("[app.a_start] start process [{}] failed: {:?}", item.name, e);
+                crate::log!("[app.a_start] start process [{}] failed: {:?}", item.name, e);
             }
         }
     }
 
     /// 异步停止的同步包装，转发到 tokio 运行时执行。
     pub fn menu_stop(&self, state: &Arc<AppState>) {
-        eprintln!("App.Stop called");
+        crate::log!("App.Stop called");
         let item = self.clone();
         let state = state.clone();
 
@@ -136,7 +136,7 @@ impl AppItem {
     }
 
     pub async fn a_stop(&self, state: &Arc<AppState>) {
-        eprintln!("async App.Stop called");
+        crate::log!("async App.Stop called");
         let item = self.clone();
         let state = state.clone();
 
@@ -151,10 +151,10 @@ impl AppItem {
             match cmd.group_spawn() {
                 Ok(mut child) => {
                     let ret = child.wait().await;
-                    eprintln!("[app.a_stop] {} execute stop command success, status={:?}", &item.name, ret);
+                    crate::log!("[app.a_stop] {} execute stop command success, status={:?}", &item.name, ret);
                 }
                 Err(e) => {
-                    eprintln!("[app.a_stop] {} execute stop command failed:{:?}", &item.name, e);
+                    crate::log!("[app.a_stop] {} execute stop command failed:{:?}", &item.name, e);
                 }
             }
         }
@@ -168,38 +168,38 @@ impl AppItem {
             let pid = c.id().unwrap_or(0);
             let ret1 = c.kill().await;
             let ret2 = c.wait().await;
-            eprintln!("[app.a_stop] stop process {}, kill={:?}, wait={:?}", pid, ret1, ret2);
+            crate::log!("[app.a_stop] stop process {}, kill={:?}, wait={:?}", pid, ret1, ret2);
         } else {
-            eprintln!("[app.a_stop] process not found");
+            crate::log!("[app.a_stop] process not found");
         }
 
         state.send_tx(item.uniq_id, false, "app.a_stop");
     }
 
     pub fn menu_restart(&self, state: &Arc<AppState>) {
-        eprintln!("App.Restart called");
+        crate::log!("App.Restart called");
         let item = self.clone();
         let state = state.clone();
         tokio::spawn(async move {
-            eprintln!("restart >>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+            crate::log!("restart >>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
             state.stopped.lock().await.remove(&item.uniq_id);
             item.a_stop(&state).await;
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             item.a_start(&state).await;
             item.keep_alive(&state).await;
-            eprintln!("restart <<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+            crate::log!("restart <<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
         });
     }
 
     pub fn open_browser(&self, _state: &Arc<AppState>) {
-        eprintln!("{} open browser ...", &self.address);
+        crate::log!("{} open browser ...", &self.address);
         if let Err(e) = webbrowser::open(&self.address) {
-            eprintln!("Failed to open browser for {}: {:?}", self.address, e);
+            crate::log!("Failed to open browser for {}: {:?}", self.address, e);
         }
     }
 
     fn startup(&self, _state: &Arc<AppState>) {
-        eprintln!("{} startup ...", &self.name);
+        crate::log!("{} startup ...", &self.name);
         let startup_commands = self.startup_commands.clone();
         let item = self.clone();
         tokio::spawn(async move {
@@ -212,7 +212,7 @@ impl AppItem {
             remove_path(self.clone(), p);
         }
 
-        eprintln!("{} startup done", &self.name);
+        crate::log!("{} startup done", &self.name);
     }
 }
 
@@ -268,18 +268,18 @@ async fn execute_command(item: AppItem, command: &str) {
     match output {
         Ok(output) => {
             if output.status.success() {
-                println!("[STARTUP] Command executed: {}", command);
+                crate::log!("[STARTUP] Command executed: {}", command);
             } else {
-                eprintln!("[STARTUP] Command failed ({}): {}", output.status, command);
+                crate::log!("[STARTUP] Command failed ({}): {}", output.status, command);
 
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if !stderr.trim().is_empty() {
-                    eprintln!("{}", stderr.trim());
+                    crate::log!("{}", stderr.trim());
                 }
             }
         }
         Err(err) => {
-            eprintln!("[STARTUP] Failed to execute command '{}': {}", command, err);
+            crate::log!("[STARTUP] Failed to execute command '{}': {}", command, err);
         }
     }
 }
