@@ -67,7 +67,7 @@ async fn main() {
                     }
                 }
 
-                if let Ok(event) = MenuEvent::receiver().try_recv() {
+                while let Ok(event) = MenuEvent::receiver().try_recv() {
                     let eid = event.id.0.as_str();
                     log!("receive event {:?} , eid={})", event, eid);
                     if let Some(action) = tray_ui.actions.get_mut(eid) {
